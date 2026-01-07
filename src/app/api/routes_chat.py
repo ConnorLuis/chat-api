@@ -5,6 +5,9 @@ from fastapi.responses import StreamingResponse
 from src.app.core.logging import get_trace_id
 from src.app.llm.schemas import ChatRequest, ChatResponse
 from src.app.llm.engines import get_engine
+from fastapi.responses import StreamingResponse
+from src.app.core.sse import sse_event
+
 
 # 创建一个路由实例，后续的接口都注册在这个实例上，方便模块化管理。
 # APIRouter：FastAPI 的路由拆分工具，用于将接口按功能分组
@@ -41,13 +44,16 @@ async def chat_stream(req: Request, body: ChatRequest):
 
     # 定义异步生成器函数（核心：逐段产生响应数据）
     async def gen():
+        # 把 trace / provider 发出去，前端好做初始化
+        yield sse_event("meta", {"trace_id": trace_id, "provider": engine.name})
         try:
             # 调用引擎的stream方法（异步迭代器），逐token获取回复
             async for token in engine.stream(body.messages, body.temperature, body.top_p, body.max_tokens):
-                yield token # 逐段返回数据给前端
+                yield sse_event("token", token) # 逐段返回数据给前端
+            yield sse_event("done", "[DONE]")
         except Exception as e:
             # 异常时返回带trace_id的错误信息
-            yield f"\n[error trace={trace_id}] {engine.name} failed: {str(e)}\n"
+            yield sse_event("error", {"trace_id": trace_id, "error": f"{engine.name} failed: {str(e)}"})
 
     # 返回流式响应，指定媒体类型为纯文本
-    return StreamingResponse(gen(), media_type="text/plain")
+    return StreamingResponse(gen(), media_type="text/event-stream")
