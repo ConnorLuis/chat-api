@@ -13,11 +13,11 @@ from .base import LLMEngine
 class OllamaEngine(LLMEngine):
     name = "ollama"
 
-    def __init__(self, base_url: str | None = None, model: str = "qwen2.5:7b", timeout_s: float = 60.0):
+    def __init__(self, base_url: str | None = None, model: str | None = None, timeout_s: float | None = None):
         # 分为三块优先级：传入的base_url > 环境变量OLLAMA_BASE_URL > 默认值(本地11434端口)
         self.base_url = base_url or os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
-        self.model = model # 默认使用通义千问2.5 7B模型
-        self.timeout_s = timeout_s # 请求超时时间60秒
+        self.model = model or os.getenv("OLLAMA_MODEL", "qwen2.5:7b")# 默认使用通义千问2.5 7B模型
+        self.timeout_s = float(timeout_s or os.getenv("OLLAMA_TIMEOUT_S", "60"))# 请求超时时间60秒
 
     # 辅助方法：消息转换成prompt形式，方便识别
     def _to_prompt(self, messages: List[ChatMessage]) -> str:
