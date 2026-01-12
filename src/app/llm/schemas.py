@@ -32,24 +32,16 @@ class ChatRequest(BaseModel):
         json_schema_extra={
             "examples": [
                 {
-                    "summary": "mock example",
-                    "description": "Use mock provider for stable dev/testing.",
-                    "value": {
-                        "provider": "mock",
-                        "messages": [{"role": "user", "content": "hi"}],
-                        "max_tokens": 64,
-                    },
+                    "provider": "mock",
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "max_tokens": 64,
                 },
                 {
-                    "summary": "ollama example",
-                    "description": "Use ollama provider (local model).",
-                    "value": {
-                        "provider": "ollama",
-                        "messages": [{"role": "user", "content": "一句话解释RAG"}],
-                        "max_tokens": 128,
-                        "temperature": 0.7,
-                        "top_p": 0.9,
-                    },
+                    "provider": "ollama",
+                    "messages": [{"role": "user", "content": "一句话解释RAG"}],
+                    "max_tokens": 128,
+                    "temperature": 0.7,
+                    "top_p": 0.9,
                 }
             ]
         })
@@ -59,7 +51,7 @@ class ChatMetadata(BaseModel):
     provider: str
     # 这里已经使用字符串”unknown“兜底
     model: str
-    latency_ms: str
+    latency_ms: int
 
 # ChatResponse响应模型
 class ChatResponse(BaseModel):
@@ -71,24 +63,31 @@ class ChatResponse(BaseModel):
     # AI 针对用户请求生成的最终回复内容，也是响应中最核心的字段。
     answer: str
     # 定义元数据
-    metadata: dict | None = None
+    metadata: ChatMetadata | None = None
     # 模型配置：添加响应示例
     model_config = ConfigDict(
         json_schema_extra={
             "examples": [
                 {
-                    "summary": "chat response",
-                    "value": {
-                        "trace_id": "95b3e35d-4593-444b-b8ce-040e944794e9",
-                        "session_id": None,
-                        "answer": "[mock] you said: hi",
-                        "metadata": {
-                            "provider": "mock",
-                            "model": "unknown",
-                            "latency_ms": 0,
-                        }
-                    },
+                    "trace_id": "95b3e35d-4593-444b-b8ce-040e944794e9",
+                    "session_id": None,
+                    "answer": "[mock] you said: hi",
+                    "metadata": {
+                        "provider": "mock",
+                        "model": "unknown",
+                        "latency_ms": 0,
+                    }
                 },
+                {
+                    "trace_id": "95b3e35d-4593-444b-b8ce-040e944794e9",
+                    "session_id": None,
+                    "answer": "[ollama] you said: hi",
+                    "metadata": {
+                        "provider": "ollama",
+                        "model": "qwen2.5:7b",
+                        "latency_ms": 12,
+                    }
+                }
             ]
         }
     )
@@ -110,16 +109,13 @@ class ErrorResponse(BaseModel):
         json_schema_extra={
             "examples": [
                 {
-                    "summary": "502 downstream error",
-                    "value": {
-                        "detail": {
-                            "trace_id": "f519bbe1-550c-41f3-a3ac-957a1e6dd94e",
-                            "provider": "ollama",
-                            "model": "qwen2.5:7b",
-                            "latency_ms": 15,
-                            "error": "ollama failed: [Errno 111] Connection refused",
-                        }
-                    },
+                    "detail": {
+                        "trace_id": "f519bbe1-550c-41f3-a3ac-957a1e6dd94e",
+                        "provider": "ollama",
+                        "model": "qwen2.5:7b",
+                        "latency_ms": 15,
+                        "error": "ollama failed: [Errno 111] Connection refused",
+                    }
                 }
             ]
         }

@@ -1,11 +1,13 @@
 import time
+from typing import Annotated
+from fastapi import Body
 from fastapi import APIRouter, Request, HTTPException
 
 from src.app.core.errors import build_error
 from src.app.core.logging import get_trace_id, logger  # 链路追踪ID
 from src.app.llm.schemas import ChatRequest, ChatResponse, ErrorResponse # 请求/响应模型
 from src.app.llm.engines import get_engine # 引擎工厂函数
-from fastapi.responses import StreamingResponse # 流式响应（重复导入，可删除）
+from fastapi.responses import StreamingResponse # 流式响应
 from src.app.core.sse import sse_event # SSE格式生成函数
 
 
@@ -15,6 +17,27 @@ router = APIRouter()
 
 def engine_model(engine) -> str:
     return (getattr(engine, "model", None) or "unknown")
+
+CHAT_OPENAPI_EXAMPLES = {
+    "mock": {
+        "summary": "mock example",
+        "description": "Use mock provider for stable dev/testing.",
+        "value": {
+            "provider": "mock",
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 64,
+        },
+    },
+    "ollama": {
+        "summary": "ollama example",
+        "description": "Use ollama provider to call local LLM.",
+        "value": {
+            "provider": "ollama",
+            "messages": [{"role": "user", "content": "一句话解释RAG"}],
+            "max_tokens": 64,
+        },
+    },
+}
 
 # 普通的同步聊天接口
 # 从请求的消息列表中提取用户最后一次发送的内容，拼接成模拟回复返回。
@@ -33,7 +56,7 @@ def engine_model(engine) -> str:
                  }
              },
 )
-def chat(req: Request, body: ChatRequest):
+def chat(req: Request, body: Annotated[ChatRequest, Body(openapi_examples=CHAT_OPENAPI_EXAMPLES)]):
     # 从请求上下文获取trace ID（链路追踪）
     trace_id = get_trace_id(req)
     # 请求中的provider（mock/ollama）获取对应引擎实例
@@ -121,7 +144,7 @@ def chat(req: Request, body: ChatRequest):
                     }
             },
 )
-async def chat_stream(req: Request, body: ChatRequest):
+async def chat_stream(req: Request, body: Annotated[ChatRequest, Body(openapi_examples=CHAT_OPENAPI_EXAMPLES)]):
     # 从请求上下文获取trace ID（链路追踪）
     trace_id = get_trace_id(req)
     # 请求中的provider（mock/ollama）获取对应引擎实例

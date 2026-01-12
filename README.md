@@ -41,6 +41,29 @@ python -m uvicorn src.app.main:app --reload --port 8000
 curl http://localhost:8000/health
 ```
 
+
+---
+
+## OpenAPI Docs (`/docs`)
+
+启动服务后访问：
+
+* `http://localhost:8000/docs`
+
+你可以在 Swagger UI 里直接选择并执行示例请求：
+
+- `/chat`：下拉选择 `mock example / ollama example`，点击 **Try it out → Execute**
+- `/chat/stream`：同样支持示例下拉；响应为 **SSE**（`text/event-stream`）
+
+### 关于 examples 的坑（避免 422）
+
+- Pydantic `json_schema_extra["examples"]` 应该放 **“纯请求体 value 列表”**
+- 带 `summary/description/value` 的示例属于 OpenAPI 格式，应该放在路由参数上：
+  `Body(openapi_examples=...)`
+
+否则 Swagger 可能把 wrapper 当请求体发出，导致 422（例如 `messages` 缺失）。
+
+
 ---
 
 ## Environment variables

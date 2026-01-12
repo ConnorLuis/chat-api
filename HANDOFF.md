@@ -1,6 +1,6 @@
 开始新对话前：**“继续 chat-api 计划，从 Day10 开始。”**
 
-# HANDOFF（给新对话用，更新至 Day9）
+# HANDOFF（给新对话用，更新至 Day10）
 - 环境：WSL2 Ubuntu + conda env=chatapi (Python 3.10)
 - 项目：`~/projects/chat-api`（GitHub: ConnorLuis/chat-api，branch master）
 - Ollama：安装在 Windows；模型 `qwen2.5:7b`（Q4_K_M）已 pull
@@ -12,7 +12,7 @@
   - `OLLAMA_MODEL`（默认 `qwen2.5:7b`）
   - `OLLAMA_TIMEOUT_S`（默认 `60`）
 
-## 已完成进度（Day1–Day9）
+## 已完成进度（Day1–Day10）
 - Day1：`GET /health` OK
 - Day2：`POST /chat`（mock + schemas）、全局中间件（`x-trace-id` + latency log）、`POST /chat/stream`（mock streaming）OK
 - Day3：可插拔引擎 `LLMEngine`（mock/ollama）；`ChatRequest` 增加 `provider=mock|ollama`；WSL -> Windows Ollama 链路打通
@@ -39,6 +39,11 @@
   - 新增 `tests/test_stream_success_contract.py`（mock 成功流顺序：meta → token* → usage → done）
   - 修复测试路径误用反斜杠导致 404（`\chat\stream` → `/chat/stream`）
   - 测试：全部通过
+- Day10：OpenAPI /docs 增强：
+  - `schemas.py`：`ChatRequest/ChatResponse/ErrorResponse` 补 examples（/docs 可直接看到示例）
+  - `routes_chat.py`：为 `/chat`、`/chat/stream` 补 `summary/description/responses`，并使用 `Body(openapi_examples=...)` 提供可执行示例
+  - 修复 Swagger Execute 出现 422：将 OpenAPI wrapper examples 从 schema 移到 `Body(openapi_examples=...)`
+
 
 ## 当前状态（可用验收）
 - mock：
@@ -49,7 +54,6 @@
   - `/chat` OK（含 metadata，model 正确；不可达时 502 + detail 结构化）
   - `/chat/stream` SSE OK（meta/token/usage/done；不可达时 meta/error 结构化）
 
-## 下一步（Day10）
-- OpenAPI 文档增强：
-  - `schemas.py` 给 `ChatRequest/ChatResponse/ErrorResponse` 补 examples，让 `/docs` 直接看到示例
-  - `/chat`、`/chat/stream` 路由补 `summary/description`，并完善 502 / SSE responses 描述
+## 下一步（Day11）
+- 做一个最小前端 demo（HTML + EventSource）对接 `/chat/stream`，展示 meta/token/usage/done/error
+- 可选：把 `/docs` 截图贴进 README（作品集观感更强）
