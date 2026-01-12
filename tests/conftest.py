@@ -1,7 +1,7 @@
 import sys
 from pathlib import Path
 
-# add project root to sys.path so "import src..." works in tests
+# 将项目根目录手动添加到 Python 的模块搜索路径（sys.path）中，解决测试文件（tests/ 目录下）无法直接导入项目源代码（src/ 目录下）的问题
 """
 chat-api/          # 项目根目录（我们要添加到sys.path的目录）
 ├── src/           # 源代码目录

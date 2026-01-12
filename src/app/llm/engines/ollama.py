@@ -1,10 +1,12 @@
+import json
 import os
 import httpx
 from typing import AsyncIterator, List
 from src.app.llm.schemas import ChatMessage
+from src.app.core.settings import settings
 from .base import LLMEngine
 
-"""对接本地 Ollama 服务的真实 AI 引擎类 OllamaEngine
+"""对接本地 Ollama 服务的真实 AI 引擎类 OllamaEngine, 继承自定义是base.py里的LLMEngine，实现其两个方法
     封装 Ollama 的 HTTP API 调用逻辑，对外提供统一的 generate（非流式）和 stream（异步流式）方法；
     支持配置 Ollama 服务地址、模型名称、超时时间，具备环境变量适配能力；
     将业务侧的 ChatMessage 消息列表转换为 Ollama 能识别的 prompt 格式，完成参数映射和请求发送。
@@ -15,9 +17,9 @@ class OllamaEngine(LLMEngine):
 
     def __init__(self, base_url: str | None = None, model: str | None = None, timeout_s: float | None = None):
         # 分为三块优先级：传入的base_url > 环境变量OLLAMA_BASE_URL > 默认值(本地11434端口)
-        self.base_url = base_url or os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
-        self.model = model or os.getenv("OLLAMA_MODEL", "qwen2.5:7b")# 默认使用通义千问2.5 7B模型
-        self.timeout_s = float(timeout_s or os.getenv("OLLAMA_TIMEOUT_S", "60"))# 请求超时时间60秒
+        self.base_url = base_url or settings.OLLAMA_BASE_URL
+        self.model = model or settings.OLLAMA_MODEL # 默认使用通义千问2.5 7B模型
+        self.timeout_s = float(timeout_s or settings.OLLAMA_TIMEOUT_S) # 请求超时时间60秒
 
     # 辅助方法：消息转换成prompt形式，方便识别
     def _to_prompt(self, messages: List[ChatMessage]) -> str:
@@ -51,7 +53,7 @@ class OllamaEngine(LLMEngine):
             return data.get("response", "") # 返回AI生成的回复内容
 
     # 核心方法：stream（流式生成回复）
-    async def stream(self, messages: List[ChatMessage], temperature: float, top_p: float, max_tokens: int) -> str:
+    async def stream(self, messages: List[ChatMessage], temperature: float, top_p: float, max_tokens: int) -> AsyncIterator[str]:
         # 转换消息为prompt
         prompt = self._to_prompt(messages)
         # 组装Ollama API的请求参数
@@ -75,7 +77,7 @@ class OllamaEngine(LLMEngine):
                     if not line:
                         continue
                     try:
-                        obj = httpx.Response(200, content=line).json()
+                        obj = json.loads(line)
                     except Exception:
                         continue
                     token = obj.get("response", "")

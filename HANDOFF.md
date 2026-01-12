@@ -1,36 +1,55 @@
-开始新对话前：“继续 chat-api 计划，从 Day？ 开始。”
+开始新对话前：**“继续 chat-api 计划，从 Day10 开始。”**
 
-# HANDOFF（给新对话用）
+# HANDOFF（给新对话用，更新至 Day9）
 - 环境：WSL2 Ubuntu + conda env=chatapi (Python 3.10)
 - 项目：`~/projects/chat-api`（GitHub: ConnorLuis/chat-api，branch master）
 - Ollama：安装在 Windows；模型 `qwen2.5:7b`（Q4_K_M）已 pull
 - WSL 访问 Windows Ollama：
   - `WIN_IP=$(grep -m 1 nameserver /etc/resolv.conf | awk '{print $2}')`
   - `export OLLAMA_BASE_URL="http://$WIN_IP:11434"`（已写入 `~/.bashrc`）
-- 关键环境变量：
+- 关键环境变量（均支持覆盖）：
   - `OLLAMA_BASE_URL`（默认 `http://127.0.0.1:11434`）
   - `OLLAMA_MODEL`（默认 `qwen2.5:7b`）
   - `OLLAMA_TIMEOUT_S`（默认 `60`）
 
-## 已完成进度
+## 已完成进度（Day1–Day9）
 - Day1：`GET /health` OK
 - Day2：`POST /chat`（mock + schemas）、全局中间件（`x-trace-id` + latency log）、`POST /chat/stream`（mock streaming）OK
 - Day3：可插拔引擎 `LLMEngine`（mock/ollama）；`ChatRequest` 增加 `provider=mock|ollama`；WSL -> Windows Ollama 链路打通
-- Day4：补齐 `README.md`；Ollama 配置 env 化；新增 pytest（`/health`、`/chat mock`）；修复测试导入路径（`tests/conftest.py`）；`pytest -q` 通过
-- Day5：`/chat/stream` 升级为 SSE（`text/event-stream`），事件类型：`meta/token/done/error`；新增 `src/app/core/sse.py`；新增 SSE 测试；`pytest -q` 3 passed
+- Day4：补齐 `README.md`；新增 pytest（`/health`、`/chat mock`）；修复测试导入路径（`tests/conftest.py`）
+- Day5：`/chat/stream` 升级为 SSE（`text/event-stream`），事件：`meta/token/done/error`；新增 SSE 测试
+- Day6：SSE 标准化增强：
+  - `sse_event`：data 统一转字符串（结构化自动 JSON 序列化），并支持多行 data
+  - 新增 `event: usage`（provider/model/latency_ms/token_events）
+  - `event: error` 统一结构化 JSON（含 trace_id/provider/model/latency_ms/error）
+  - 新增测试：usage 存在；ollama 不可达时仍 200 但 SSE 返回 error
+- Day7：同步接口对齐：
+  - 新增 `settings.py`（property 动态读取 env）
+  - `ChatResponse` 增加 `metadata`（provider/model/latency_ms）
+  - 新增契约测试 `test_chat_contract.py`
+  - 测试：`pytest -q` 6 passed
+- Day8：错误与日志工程化：
+  - 新增 `build_error()`，统一 `/chat` 的 502 detail 与 SSE 的 `event:error` 的结构化 JSON（trace_id/provider/model/latency_ms/error）
+  - 引入 logging 初始化（main 中 setup），中间件/路由统一 logger 输出（trace_id/provider/model/latency_ms）
+  - 新增错误契约测试：`/chat` 502 结构稳定；`/chat/stream` error event 结构稳定
+  - `meta` 事件增加 `model`，并统一 `model` 兜底为 `"unknown"`
+- Day9：文档与 SSE 契约测试增强：
+  - README 增补：Error Handling Contract（Day8）、SSE event format、Runtime debugging（含“改 env 需重启服务”坑）
+  - 新增 `tests/test_sse_format.py`（事件块 `\n\n` 空行结束 + event/data 行存在）
+  - 新增 `tests/test_stream_success_contract.py`（mock 成功流顺序：meta → token* → usage → done）
+  - 修复测试路径误用反斜杠导致 404（`\chat\stream` → `/chat/stream`）
+  - 测试：全部通过
 
 ## 当前状态（可用验收）
 - mock：
-  - `/chat` OK
-  - `/chat/stream` SSE OK
+  - `/health` OK
+  - `/chat` OK（含 metadata）
+  - `/chat/stream` SSE OK（meta/token/usage/done；失败时 meta/error）
 - ollama：
-  - `/chat` OK
-  - `/chat/stream` SSE OK
+  - `/chat` OK（含 metadata，model 正确；不可达时 502 + detail 结构化）
+  - `/chat/stream` SSE OK（meta/token/usage/done；不可达时 meta/error 结构化）
 
-## 下一步（Day6 任务）
-- SSE 产品化增强：
-  - 新增 `event: usage`（provider/model/latency/token_events）
-  - 统一 `event: error` 为结构化 JSON（含 trace_id/provider/model/latency）
-  - 增加 2 个测试：usage 事件存在；ollama 不可达时返回 error 事件
-  - README 增加 SSE 事件说明
-
+## 下一步（Day10）
+- OpenAPI 文档增强：
+  - `schemas.py` 给 `ChatRequest/ChatResponse/ErrorResponse` 补 examples，让 `/docs` 直接看到示例
+  - `/chat`、`/chat/stream` 路由补 `summary/description`，并完善 502 / SSE responses 描述

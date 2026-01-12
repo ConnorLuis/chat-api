@@ -23,5 +23,5 @@ def sse_event(event: str, data: Any) -> str:
     lines = text.splitlines() or [""]
     data_lines = "".join([f"data: {line}\n" for line in lines])
 
-    # SSE 框架：event + data + blank line
+    # SSE block ends with a blank line -> "\n\n"
     return f"event: {event}\n{data_lines}\n"

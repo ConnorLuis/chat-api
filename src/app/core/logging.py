@@ -1,9 +1,13 @@
+import logging
 import time
 import uuid
 from fastapi import FastAPI, Request
 
 # 定义 trace ID 在HTTP头中的键名，用于在请求 / 响应头中传递 trace ID
 TRACE_ID_HEADER = "x-trace-id"
+
+# 初始化业务专属日志器（全局唯一）
+logger = logging.getLogger("llm_chat_log")
 
 # 从请求对象中获取 trace ID
 def get_trace_id(req: Request) -> str:
@@ -33,6 +37,20 @@ def install_logging_middleware(app: FastAPI) -> None:
         # 将 trace ID 写入响应头，让客户端能拿到这个 ID（方便排查问题）
         response.headers[TRACE_ID_HEADER] = trace_id
         # 打印结构化日志，包含关键信息
-        print(f"[trace={trace_id}] {request.method} {request.url.path} {response.status_code} {cost_ms:.1f}ms")
+        logger.info(f"[trace={trace_id}] {request.method} {request.url.path} {response.status_code} {cost_ms:.1f}ms")
         # 返回响应给客户端
         return response
+
+# 封装日志配置逻辑，项目启动时调用一次即可完成全局日志初始化
+def setup_logging():
+    logging.basicConfig(
+        level=logging.INFO,
+        # 定义日志输出格式
+        # 日志记录时间-日志器名称-日志级别名称-日志核心内容
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+        # 指定日志输出目标
+        handlers=[
+            logging.StreamHandler()
+        ]
+    )

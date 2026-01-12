@@ -1,8 +1,10 @@
 from fastapi import FastAPI
 
 from src.app.api.routes_chat import router as chat_router
-from src.app.core.logging import install_logging_middleware
+from src.app.core.logging import install_logging_middleware, setup_logging
 
+# # 项目启动时初始化日志
+setup_logging()
 # 创建一个 FastAPI 应用实例 app，这是整个后端服务的核心对象，所有的中间件、路由、配置都挂载在这个实例上；
 app = FastAPI()
 """安装全局日志中间件

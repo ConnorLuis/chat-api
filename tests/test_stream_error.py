@@ -2,9 +2,11 @@ import os
 from fastapi.testclient import TestClient
 from src.app.main import app
 
-"""异常场景测试用例，
-    核心目标是验证：当 Ollama 服务无法访问时，/chat/stream 接口仍能返回合规的 SSE 流式响应（200 状态码 + text/event-stream 格式），
-    并在 SSE 事件中推送 meta（元信息）和 error（错误信息）事件，而非直接返回 5xx 错误，保证前端能优雅处理异常。
+"""对 FastAPI 应用的 /chat/stream 流式接口进行的 Ollama 服务不可达场景下的 SSE 异常契约测试
+    验证：
+        当 Ollama 服务无法访问时，/chat/stream 接口仍返回 200 状态码（流式接口的异常需封装在 SSE 事件中，而非返回 5xx 状态码）；
+        响应的 Content-Type 仍符合 SSE 标准（text/event-stream），保证前端能正常解析流式数据；
+        异常场景下的 SSE 响应中，先推送 meta 元信息事件，再推送 error 错误事件，确保前端能获取溯源信息并优雅处理异常。
 """
 
 # 把 FastAPI 应用实例 app 传入 TestClient，创建一个模拟的 HTTP 客户端 client；

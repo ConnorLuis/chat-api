@@ -3,7 +3,7 @@ from typing import AsyncIterator, List
 from src.app.llm.schemas import ChatMessage
 from .base import LLMEngine
 
-"""测试用的 Mock 引擎类 MockEngine
+"""测试用的 Mock 引擎类 MockEngine, 继承自定义是base.py里的LLMEngine，实现其两个方法
     实现非流式的 generate 方法：模拟 AI 生成回复（本质是返回用户最后一条输入的 “回声”）；
     实现异步流式的 stream 方法：模拟 AI 逐字返回回复的效果（流式输出）；
     全程不调用真实 AI 模型，仅用于接口测试、前端联调等场景，和你之前 curl 得到的 [mock] you said: hi day2 响应完全对应。
