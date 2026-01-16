@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 
 from src.app.api.routes_chat import router as chat_router
+from src.app.api.routes_demo import router as demo_router
 from src.app.core.logging import install_logging_middleware, setup_logging
 
 # # 项目启动时初始化日志
@@ -24,3 +25,4 @@ def health():
 实现路由模块化：把不同功能的接口（聊天、用户、订单等）拆分到不同文件，避免入口文件代码臃肿；
 """
 app.include_router(chat_router)
+app.include_router(demo_router)
