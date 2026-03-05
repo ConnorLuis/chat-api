@@ -255,3 +255,21 @@ pytest -q
 * `/api/tags` 返回 `{"models":[]}`：说明还没 pull 模型（Windows 执行 `ollama pull qwen2.5:7b`）
 
 ---
+
+---
+
+## Demo（Streaming SSE）
+
+启动服务后，打开：
+
+- `http://localhost:8000/demo`
+
+功能：
+- 选择 provider：`mock`（测试）/ `ollama`（本地模型）
+- 输入 prompt，点击 Start 开始流式输出
+- 页面展示：meta（trace_id/provider/model）、output（token 拼接）、usage、error、done
+
+实现要点：
+- Demo 使用 `fetch(POST /chat/stream)` 并读取 `ReadableStream` 解析 SSE（因为 `EventSource` 仅支持 GET）
+- SSE 事件块用 `\n\n` 分隔；每块包含 `event:` 与 `data:` 行
+
