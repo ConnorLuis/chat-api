@@ -1,6 +1,6 @@
-开始新对话前：**“继续 chat-api 计划，从 Day12 开始。”**
+开始新对话前：**“继续 chat-api 计划，从 Day13 开始。”**
 
-# HANDOFF（给新对话用，更新至 Day11）
+# HANDOFF（给新对话用，更新至 Day12）
 - 环境：WSL2 Ubuntu + conda env=chatapi (Python 3.10)
 - 项目：`~/projects/chat-api`（GitHub: ConnorLuis/chat-api，branch master）
 - Ollama：安装在 Windows；模型 `qwen2.5:7b`（Q4_K_M）已 pull
@@ -12,7 +12,7 @@
   - `OLLAMA_MODEL`（默认 `qwen2.5:7b`）
   - `OLLAMA_TIMEOUT_S`（默认 `60`）
 
-## 已完成进度（Day1–Day11）
+## 已完成进度（Day1–Day12）
 - Day1：`GET /health` OK
 - Day2：`POST /chat`（mock + schemas）、全局中间件（`x-trace-id` + latency log）、`POST /chat/stream`（mock streaming）OK
 - Day3：可插拔引擎 `LLMEngine`（mock/ollama）；`ChatRequest` 增加 `provider=mock|ollama`；WSL -> Windows Ollama 链路打通
@@ -46,19 +46,25 @@
   - Demo 通过 `fetch(POST /chat/stream)` 读取 `ReadableStream` 解析 SSE（不用 EventSource，因为 EventSource 只支持 GET）
   - Demo UI 展示：meta（trace_id/provider/model）、output（token 拼接）、usage、error、done
   - 新增 `tests/test_demo_page.py`：校验 `/demo` 返回 200 + `text/html`，并包含 SSE 关键字；全套测试通过（11 passed）
+- Day12：Demo 增强（Stop/Abort）：
+  - `/demo` 增加 Stop 按钮，使用 `AbortController` 中断 `fetch(POST /chat/stream)` 的流式请求
+  - UI 状态管理：Start/Stop 按钮互斥；Stop 后立即停止追加 token，并允许再次 Start
+  - 把 `AbortError` 视为正常取消，不写入 Error 区（避免误报）
+
+
 
 ## 当前状态（可用验收）
 - mock：
   - `/health` OK
   - `/chat` OK（含 metadata）
   - `/chat/stream` SSE OK（meta/token/usage/done；失败时 meta/error）
-  - `/demo` OK（能流式展示 meta/output/usage/done）
+  - `/demo` OK（能流式展示 meta/output/usage/done；支持 Stop/Abort 中断流）
 - ollama：
   - `/chat` OK（含 metadata，model 正确；不可达时 502 + detail 结构化）
   - `/chat/stream` SSE OK（meta/token/usage/done；不可达时 meta/error 结构化）
-  - `/demo` OK（能展示 model，例如 `qwen2.5:7b`）
+  - `/demo` OK（能展示 model，例如 `qwen2.5:7b`；支持 Stop/Abort 中断流）
 
-## 下一步（Day12）
-- Demo 增加 Stop/Abort（AbortController），可以随时中断流式请求并清理状态
-- 可选：usage 统计增强（input/output token；或至少在 mock 模拟输出 token 计数）
-- 可选：README 增加 Demo 截图（更直观）
+## 下一步（Day13）
+- 统一 usage 展示：前端优先展示 `token_events`；可选在后端补 `prompt_tokens/completion_tokens` 真实统计
+- Demo 体验增强：增加“复制 trace_id / 复制 curl / 清空输出”按钮
+- 可选：把 `/docs` 与 `/demo` 截图贴进 README（作品集观感更强）

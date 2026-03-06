@@ -14,7 +14,7 @@
 ## Requirements
 
 * Python 3.10+
-* 推荐：WSL2 Ubuntu + conda（你当前就是这套）
+* 推荐：WSL2 Ubuntu + conda
 * 可选：Windows 安装 Ollama（用于本地大模型）
 
 ---
@@ -272,4 +272,15 @@ pytest -q
 实现要点：
 - Demo 使用 `fetch(POST /chat/stream)` 并读取 `ReadableStream` 解析 SSE（因为 `EventSource` 仅支持 GET）
 - SSE 事件块用 `\n\n` 分隔；每块包含 `event:` 与 `data:` 行
+
+
+### Stop / Abort（Day12）
+
+Demo 现在支持 **Stop** 按钮中断流式请求（使用 `AbortController` + `fetch(..., { signal })`）：
+
+- 点击 **Stop** 会触发 `controller.abort()`，前端立即停止读取流并恢复按钮状态
+- `AbortError` 属于“用户主动取消”，不会显示为业务错误（Error 区不会红）
+- Stop 后可以直接再次 Start，开始新一轮流式请求（新的 trace_id）
+
+> 说明：当前后端 `event: usage` 主要包含 `latency_ms` 与 `token_events`；如需 `prompt_tokens/completion_tokens` 可在后端增加真实 token 统计后再展示。
 
