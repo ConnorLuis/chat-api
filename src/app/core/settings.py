@@ -25,4 +25,13 @@ class Settings:
     def OLLAMA_TIMEOUT_S(self) -> float:
         return float(getenv("OLLAMA_TIMEOUT_S", "60"))
 
+    @property
+    def PROMPTS_DIR(self) -> str:
+        return getenv("PROMPTS_DIR", "prompts")
+
+    @property
+    def RUN_LOG_PATH(self) -> str:
+        return getenv("RUN_LOG_PATH", "runs/prompt_runs.jsonl")
+
+
 settings = Settings()

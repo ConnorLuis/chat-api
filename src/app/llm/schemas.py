@@ -27,6 +27,10 @@ class ChatRequest(BaseModel):
     # 选择器，诉后端代码：“本次聊天请求，需要使用哪一个 AI 服务 / 模型引擎来处理并生成回复”。
     # 限制只能mock或ollama回复，避免传入无效值
     provider: Literal["mock", "ollama"] = "mock"
+
+    prompt_id: str | None = None
+    prompt_version: str | None = None
+    prompt_vars: dict | None = None
     # 模型配置：添加JSON Schema示例，用于自动生成接口文档
     model_config = ConfigDict(
         json_schema_extra={
@@ -42,6 +46,14 @@ class ChatRequest(BaseModel):
                     "max_tokens": 128,
                     "temperature": 0.7,
                     "top_p": 0.9,
+                },
+                {
+                    "provider": "mock",
+                    "prompt_id": "chat",
+                    "prompt_version": "v1",
+                    "prompt_vars": {},
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "max_tokens": 64
                 }
             ]
         })
@@ -52,6 +64,8 @@ class ChatMetadata(BaseModel):
     # 这里已经使用字符串”unknown“兜底
     model: str
     latency_ms: int
+    prompt_id: str | None = None
+    prompt_version: str | None = None
 
 # ChatResponse响应模型
 class ChatResponse(BaseModel):

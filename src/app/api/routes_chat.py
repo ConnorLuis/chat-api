@@ -5,6 +5,9 @@ from fastapi import APIRouter, Request, HTTPException
 
 from src.app.core.errors import build_error
 from src.app.core.logging import get_trace_id, logger  # 链路追踪ID
+from src.app.core.prompt_registry import PromptRegistry, ensure_system_prompt
+from src.app.core.run_logger import append_jsonl
+from src.app.core.settings import settings
 from src.app.llm.schemas import ChatRequest, ChatResponse, ErrorResponse # 请求/响应模型
 from src.app.llm.engines import get_engine # 引擎工厂函数
 from fastapi.responses import StreamingResponse # 流式响应
@@ -14,6 +17,7 @@ from src.app.core.sse import sse_event # SSE格式生成函数
 # 创建一个路由实例，后续的接口都注册在这个实例上，方便模块化管理。
 # APIRouter：FastAPI 的路由拆分工具，用于将接口按功能分组
 router = APIRouter()
+prompt_registry = PromptRegistry(settings.PROMPTS_DIR)
 
 def engine_model(engine) -> str:
     return (getattr(engine, "model", None) or "unknown")
@@ -64,15 +68,35 @@ def chat(req: Request, body: Annotated[ChatRequest, Body(openapi_examples=CHAT_O
 
     start = time.perf_counter()
 
+    prompt_id = body.prompt_id
+    prompt_version = body.prompt_version or "v1"
+    prompt_vars = body.prompt_vars or {}
+
+    messages = body.messages
+    system_text = None
+    if prompt_id:
+        template = prompt_registry.get(prompt_id, prompt_version)
+        system_text = prompt_registry.render(template, prompt_vars)
+        messages = ensure_system_prompt(messages, system_text)
     try:
         # 调用引擎的非流式generate方法生成回复（Mock返回模拟内容，Ollama调用真实模型）
-        answer = engine.generate(body.messages, body.temperature, body.top_p, body.max_tokens)
+        answer = engine.generate(messages, body.temperature, body.top_p, body.max_tokens)
     except Exception as e:
         latency_ms = int((time.perf_counter() - start) * 1000)
         err = build_error(trace_id, engine.name, engine_model(engine), latency_ms, f"{engine.name} failed: {str(e)}")
-        logger.error(
-            f"[chat] trace={trace_id} provider={engine.name} model={engine_model(engine)} latency_ms={latency_ms} error={str(e)}"
-        )
+        record = {
+            "trace_id": trace_id,
+            "mode": "chat",
+            "provider": engine.name,
+            "model": engine_model(engine),
+            "prompt_id": prompt_id,
+            "prompt_version": prompt_version if prompt_id else "none",
+            "latency_ms": latency_ms,
+            "prompt_chars": len(system_text) if system_text else 0,
+            "output_chars": 0,
+            "error": str(e)
+        }
+        append_jsonl(settings.RUN_LOG_PATH, record)
         raise HTTPException(status_code=502, detail=err)
 
     latency_ms = int((time.perf_counter() - start) * 1000)
@@ -80,13 +104,23 @@ def chat(req: Request, body: Annotated[ChatRequest, Body(openapi_examples=CHAT_O
         "provider": engine.name,
         "model": engine_model(engine),
         "latency_ms": latency_ms,
+        "prompt_id": prompt_id or "none",
+        "prompt_version": prompt_version if prompt_id else "none"
     }
 
     # 打印日志：便于后端监控
-    # 异常日志用 error 级别
-    logger.info(
-        f"[chat] trace={trace_id} provider={engine.name} model={metadata['model']} latency_ms={latency_ms}"
-    )
+    record = {
+        "trace_id": trace_id,
+        "mode": "chat",
+        "provider": engine.name,
+        "model": engine_model(engine),
+        "prompt_id": prompt_id,
+        "prompt_version": prompt_version if prompt_id else "none",
+        "latency_ms": latency_ms,
+        "prompt_chars": len(system_text) if system_text else 0,
+        "output_chars": len(answer),
+    }
+    append_jsonl(settings.RUN_LOG_PATH, record)
     # 返回符合ChatResponse模型的响应
     return ChatResponse(trace_id=trace_id, session_id=body.session_id, answer=answer, metadata=metadata)
 
@@ -153,15 +187,31 @@ async def chat_stream(req: Request, body: Annotated[ChatRequest, Body(openapi_ex
     # 定义异步生成器函数（核心：逐段产生响应数据）
     async def gen():
         start = time.perf_counter() # 记录开始时间（统计耗时）
-        token_count = 0 # 统计返回的token数量
+
+        messages = body.messages
+        system_text = None
+
+        prompt_id = body.prompt_id
+        prompt_version = body.prompt_version or "v1"
+        prompt_vars = body.prompt_vars or {}
+
+        if prompt_id:
+            template = prompt_registry.get(prompt_id, prompt_version)
+            system_text = prompt_registry.render(template, prompt_vars)
+            messages = ensure_system_prompt(messages, system_text)
 
         # 把 trace / provider 发出去，前端好做初始化
-        yield sse_event("meta", {"trace_id": trace_id, "provider": engine.name, "model": engine_model(engine)})
+        yield sse_event("meta", {"trace_id": trace_id, "provider": engine.name, "model": engine_model(engine),"prompt_id": prompt_id or "none",
+        "prompt_version": prompt_version if prompt_id else "none"})
+
+        output_chars = 0
+        token_events = 0
 
         try:
             # 调用引擎的stream方法（异步迭代器），逐token获取回复
-            async for token in engine.stream(body.messages, body.temperature, body.top_p, body.max_tokens):
-                token_count += 1 # 统计token数
+            async for token in engine.stream(messages, body.temperature, body.top_p, body.max_tokens):
+                token_events += 1
+                output_chars += len(token)
                 yield sse_event("token", token) # 推送token事件，逐段返回数据给前端
 
             # 计算耗时（毫秒）
@@ -173,25 +223,48 @@ async def chat_stream(req: Request, body: Annotated[ChatRequest, Body(openapi_ex
                 "provider": engine.name,
                 "model": engine_model(engine),
                 "latency_ms": latency_ms,
-                "token_events": token_count,
+                "token_events": token_events,
+                "prompt_id": prompt_id or "none",
+                "prompt_version": prompt_version if prompt_id else "none",
             }
             yield sse_event("usage", usage)
             yield sse_event("done", "[DONE]") # 推送结束事件，前端停止接收
 
-            # 打印日志：便于后端监控
-            logger.info(
-                f"[stream] trace={trace_id} provider={engine.name} model={usage['model']} latency_ms={latency_ms} token_events={token_count}"
-            )
+            append_jsonl(settings.RUN_LOG_PATH, {
+                "trace_id": trace_id,
+                "mode": "stream",
+                "provider": engine.name,
+                "model": engine_model(engine),
+                "prompt_id": prompt_id,
+                "prompt_version": prompt_version if prompt_id else "none",
+                "latency_ms": latency_ms,
+                "token_events": token_events,
+                "prompt_chars": len(system_text) if system_text else 0,
+                "output_chars": output_chars,
+            })
+
         except Exception as e:
             latency_ms = int((time.perf_counter() - start) * 1000)
-            err = build_error(trace_id, engine.name, engine_model(engine), latency_ms,
-                              f"{engine.name} failed: {str(e)}")
-            # 流式异常也用 error 级别
-            logger.error(
-                f"[stream] trace={trace_id} provider={engine.name} model={engine_model(engine)} latency_ms={latency_ms} error={str(e)}"
-            )
+            err = build_error(trace_id, engine.name, engine_model(engine), latency_ms, f"{engine.name} failed: {str(e)}")
+            err["prompt_id"] = prompt_id or "none"
+            err["prompt_version"] = prompt_version if prompt_id else "none"
             # 异常时返回带trace_id的错误信息
             yield sse_event("error", err)
+            # 流式异常也用 error 级别
+            append_jsonl(settings.RUN_LOG_PATH, {
+                "trace_id": trace_id,
+                "mode": "stream",
+                "provider": engine.name,
+                "model": engine_model(engine),
+                "prompt_id": prompt_id,
+                "prompt_version": prompt_version if prompt_id else "none",
+                "latency_ms": latency_ms,
+                "token_events": token_events,
+                "prompt_chars": len(system_text) if system_text else 0,
+                "output_chars": 0,
+                "error": str(e)
+            })
+
 
     # 返回流式响应，指定媒体类型为纯文本
     return StreamingResponse(gen(), media_type="text/event-stream")
