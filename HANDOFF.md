@@ -1,9 +1,9 @@
-开始新对话前：**“继续 chat-api 计划，从 Day13 开始。”**
+开始新对话前：**“继续 chat-api 计划，从 Day15 开始（Prompt 列表 + 回放 API）。”**
 
-# HANDOFF（给新对话用，更新至 Day12）
+# HANDOFF（给新对话用，更新至 Day14）
 - 环境：WSL2 Ubuntu + conda env=chatapi (Python 3.10)
 - 项目：`~/projects/chat-api`（GitHub: ConnorLuis/chat-api，branch master）
-- Ollama：安装在 Windows；模型 `qwen2.5:7b`（Q4_K_M）已 pull
+- Ollama：安装在 Windows；模型 `qwen2.5:7b` 已 pull
 - WSL 访问 Windows Ollama：
   - `WIN_IP=$(grep -m 1 nameserver /etc/resolv.conf | awk '{print $2}')`
   - `export OLLAMA_BASE_URL="http://$WIN_IP:11434"`（已写入 `~/.bashrc`）
@@ -11,60 +11,40 @@
   - `OLLAMA_BASE_URL`（默认 `http://127.0.0.1:11434`）
   - `OLLAMA_MODEL`（默认 `qwen2.5:7b`）
   - `OLLAMA_TIMEOUT_S`（默认 `60`）
+  - `RUN_LOG_PATH`（默认 `runs/prompt_runs.jsonl`）
 
-## 已完成进度（Day1–Day12）
+## 已完成进度（Day1–Day14）
 - Day1：`GET /health` OK
 - Day2：`POST /chat`（mock + schemas）、全局中间件（`x-trace-id` + latency log）、`POST /chat/stream`（mock streaming）OK
-- Day3：可插拔引擎 `LLMEngine`（mock/ollama）；`ChatRequest` 增加 `provider=mock|ollama`；WSL -> Windows Ollama 链路打通
+- Day3：可插拔引擎 `LLMEngine`（mock/ollama）；`ChatRequest` 增加 `provider=mock|ollama`
 - Day4：补齐 `README.md`；新增 pytest（`/health`、`/chat mock`）；修复测试导入路径（`tests/conftest.py`）
-- Day5：`/chat/stream` 升级为 SSE（`text/event-stream`），事件：`meta/token/done/error`；新增 SSE 测试
-- Day6：SSE 标准化增强：
-  - `sse_event`：data 统一转字符串（结构化自动 JSON 序列化），并支持多行 data
-  - 新增 `event: usage`（provider/model/latency_ms/token_events）
-  - `event: error` 统一结构化 JSON（含 trace_id/provider/model/latency_ms/error）
-  - 新增测试：usage 存在；ollama 不可达时仍 200 但 SSE 返回 error
-- Day7：同步接口对齐：
-  - 新增 `settings.py`（property 动态读取 env）
-  - `ChatResponse` 增加 `metadata`（provider/model/latency_ms）
-  - 新增契约测试 `test_chat_contract.py`
-- Day8：错误与日志工程化：
-  - 新增 `build_error()`，统一 `/chat` 的 502 detail 与 SSE 的 `event:error` 的结构化 JSON（trace_id/provider/model/latency_ms/error）
-  - logging 初始化（main 中 setup），中间件/路由统一 logger 输出（trace_id/provider/model/latency_ms）
-  - 新增错误契约测试：`/chat` 502 结构稳定；`/chat/stream` error event 结构稳定
-  - `meta` 事件增加 `model`，并统一 `model` 兜底为 `"unknown"`
-- Day9：文档与 SSE 契约测试增强：
-  - README 增补：Error Handling Contract、SSE event format、Runtime debugging（含“改 env 需重启服务”坑）
-  - 新增 `tests/test_sse_format.py`（事件块 `\n\n` 空行结束 + event/data 行存在）
-  - 新增 `tests/test_stream_success_contract.py`（mock 成功流顺序：meta → token* → usage → done）
-  - 修复测试路径误用反斜杠导致 404（`\chat\stream` → `/chat/stream`）
-- Day10：OpenAPI /docs 增强：
-  - `schemas.py`：`ChatRequest/ChatResponse/ErrorResponse` 补 examples（/docs 可直接看到示例）
-  - `routes_chat.py`：为 `/chat`、`/chat/stream` 补 `summary/description/responses`，并使用 `Body(openapi_examples=...)` 提供可执行示例
-  - 修复 Swagger Execute 出现 422：将 OpenAPI wrapper examples 从 schema 移到 `Body(openapi_examples=...)`
-- Day11：新增 `/demo` 流式聊天演示页（可面试现场演示）：
-  - 新增 `src/app/api/routes_demo.py`：`GET /demo` 返回内联 HTML + JS
-  - Demo 通过 `fetch(POST /chat/stream)` 读取 `ReadableStream` 解析 SSE（不用 EventSource，因为 EventSource 只支持 GET）
-  - Demo UI 展示：meta（trace_id/provider/model）、output（token 拼接）、usage、error、done
-  - 新增 `tests/test_demo_page.py`：校验 `/demo` 返回 200 + `text/html`，并包含 SSE 关键字；全套测试通过（11 passed）
-- Day12：Demo 增强（Stop/Abort）：
-  - `/demo` 增加 Stop 按钮，使用 `AbortController` 中断 `fetch(POST /chat/stream)` 的流式请求
-  - UI 状态管理：Start/Stop 按钮互斥；Stop 后立即停止追加 token，并允许再次 Start
-  - 把 `AbortError` 视为正常取消，不写入 Error 区（避免误报）
-
-
+- Day5：`/chat/stream` 升级为 SSE（`text/event-stream`），事件：`meta/token/done/error`
+- Day6：SSE 标准化增强：`sse_event`（data 字符串化/JSON 序列化/多行）、新增 `event: usage`、结构化 `event: error`
+- Day7：同步接口对齐：`settings.py`（env 读取）；`ChatResponse.metadata`（provider/model/latency_ms）；契约测试 `test_chat_contract.py`
+- Day8：错误与日志工程化：`build_error()` 统一 502 detail 与 stream error；meta 增加 model；model 兜底为 `unknown`
+- Day9：README 增补；新增 SSE/stream 契约测试（事件块 `\n\n`、顺序 meta→token*→usage→done）
+- Day10：OpenAPI /docs 增强：schemas examples + 路由 summary/description/responses
+- Day11：新增 `/demo` 流式聊天演示页（fetch POST + ReadableStream 解析 SSE）
+- Day12：Demo 增强 Stop/Abort（AbortController）；AbortError 不视为业务错误
+- Day13：PromptHub 最小闭环：
+  - Prompt Registry：`prompts/<prompt_id>/<version>.md`
+  - `/chat` 与 `/chat/stream` 支持 `prompt_id/prompt_version/prompt_vars`（服务端注入 system prompt）
+  - `meta/usage/error` 事件携带 prompt_id/version
+  - run log（JSONL）落盘：trace_id/provider/model/latency_ms/token_events/prompt_id/prompt_version
+  - Demo 增强：复制 trace_id / 复制 curl / 清空输出（配合 Stop/Abort）
+- Day14：Prompt A/B Compare：
+  - 新增 `POST /prompt/compare`：同一输入跑两套 prompt（A/B），返回并列结果 + 指标
+  - run log（JSONL）新增：`compare_group_id + variant(A/B) + mode=compare`，并记录生成参数（temperature/top_p/max_tokens）
+  - Demo 支持 Stream/Compare 模式切换，Compare 显示 group_id、A/B 输出、metrics，Copy Curl 可复现
+  - 新增 compare 契约测试：`tests/test_prompt_compare_contract.py`
+  - 离线回放工具：`scripts/replay_compare.py`（按 compare_group_id 回放 A/B）
 
 ## 当前状态（可用验收）
-- mock：
-  - `/health` OK
-  - `/chat` OK（含 metadata）
-  - `/chat/stream` SSE OK（meta/token/usage/done；失败时 meta/error）
-  - `/demo` OK（能流式展示 meta/output/usage/done；支持 Stop/Abort 中断流）
-- ollama：
-  - `/chat` OK（含 metadata，model 正确；不可达时 502 + detail 结构化）
-  - `/chat/stream` SSE OK（meta/token/usage/done；不可达时 meta/error 结构化）
-  - `/demo` OK（能展示 model，例如 `qwen2.5:7b`；支持 Stop/Abort 中断流）
+- mock：`/health`、`/chat`、`/chat/stream`、`/demo`、`/prompt/compare` 全部 OK
+- ollama：可达时 `/chat`、`/chat/stream`、`/prompt/compare` OK；不可达时 `/chat`=502(detail 结构化)，`/chat/stream`=200 + `event:error`
 
-## 下一步（Day13）
-- 统一 usage 展示：前端优先展示 `token_events`；可选在后端补 `prompt_tokens/completion_tokens` 真实统计
-- Demo 体验增强：增加“复制 trace_id / 复制 curl / 清空输出”按钮
-- 可选：把 `/docs` 与 `/demo` 截图贴进 README（作品集观感更强）
+## 下一步（Day15）
+- `GET /prompts`：列出 prompt_id 与版本（扫描 prompts 目录）
+- `GET /runs/{trace_id}`：按 trace_id 回放查询（从 JSONL 查）
+- `GET /runs/compare/{compare_group_id}`：按 group 回放查询（将 replay 能力 API 化）
+- README 收尾：补齐 PromptHub/Compare/Replay 的使用与演示步骤

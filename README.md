@@ -284,3 +284,68 @@ Demo 现在支持 **Stop** 按钮中断流式请求（使用 `AbortController` +
 
 > 说明：当前后端 `event: usage` 主要包含 `latency_ms` 与 `token_events`；如需 `prompt_tokens/completion_tokens` 可在后端增加真实 token 统计后再展示。
 
+
+
+---
+
+## Prompt Compare (Day14)
+
+新增接口：`POST /prompt/compare`  
+同一输入套用两套 Prompt（A/B），返回并列结果与对比指标，并将两条运行记录写入 run log（JSONL）用于回放。
+
+### Example
+
+```bash
+curl -s -X POST http://localhost:8000/prompt/compare   -H "Content-Type: application/json"   -d '{
+    "provider":"ollama",
+    "messages":[{"role":"user","content":"解释介绍RAG"}],
+    "max_tokens":128,
+    "temperature":0.7,
+    "top_p":0.9,
+    "prompt_a":{"prompt_id":"chat","prompt_version":"v1","prompt_vars":{}},
+    "prompt_b":{"prompt_id":"qa_strict","prompt_version":"v1","prompt_vars":{}}
+  }' | cat
+```
+
+返回结构（关键字段）：
+- `compare_group_id`
+- `a/b.trace_id`
+- `a/b.metadata`（含 `prompt_id/prompt_version/provider/model/latency_ms`）
+- `metrics`（`latency_ms_*`、`output_chars_*`）
+
+### Run log (JSONL)
+
+默认日志：`runs/prompt_runs.jsonl`  
+compare 每次写两条（A/B），字段包含：
+- `compare_group_id`、`variant`、`mode=compare`
+- `trace_id`、`provider/model`
+- `prompt_id/prompt_version`
+- `latency_ms`、`prompt_chars`、`output_chars`
+- `temperature/top_p/max_tokens`
+
+### Replay (offline)
+
+脚本：`scripts/replay_compare.py`
+
+```bash
+python scripts/replay_compare.py <compare_group_id>
+# 或覆盖日志路径
+python scripts/replay_compare.py <compare_group_id> --log ./runs/prompt_runs.jsonl
+```
+
+---
+
+## Demo（Stream / Compare）
+
+打开：
+- `http://localhost:8000/demo`
+
+支持两种模式：
+- **Stream Chat（SSE）**：调用 `/chat/stream`
+- **Prompt Compare（A/B）**：调用 `/prompt/compare`
+
+Compare 模式会展示：
+- group_id
+- A/B 输出并列
+- metrics（latency/output diff）
+并支持 Copy Curl 复现 compare 请求。

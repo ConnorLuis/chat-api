@@ -94,6 +94,9 @@ def chat(req: Request, body: Annotated[ChatRequest, Body(openapi_examples=CHAT_O
             "latency_ms": latency_ms,
             "prompt_chars": len(system_text) if system_text else 0,
             "output_chars": 0,
+            "temperature": body.temperature,
+            "top_p": body.top_p,
+            "max_tokens": body.max_tokens,
             "error": str(e)
         }
         append_jsonl(settings.RUN_LOG_PATH, record)
@@ -119,6 +122,9 @@ def chat(req: Request, body: Annotated[ChatRequest, Body(openapi_examples=CHAT_O
         "latency_ms": latency_ms,
         "prompt_chars": len(system_text) if system_text else 0,
         "output_chars": len(answer),
+        "temperature": body.temperature,
+        "top_p": body.top_p,
+        "max_tokens": body.max_tokens,
     }
     append_jsonl(settings.RUN_LOG_PATH, record)
     # 返回符合ChatResponse模型的响应
@@ -262,6 +268,9 @@ async def chat_stream(req: Request, body: Annotated[ChatRequest, Body(openapi_ex
                 "token_events": token_events,
                 "prompt_chars": len(system_text) if system_text else 0,
                 "output_chars": 0,
+                "temperature": body.temperature,
+                "top_p": body.top_p,
+                "max_tokens": body.max_tokens,
                 "error": str(e)
             })
 

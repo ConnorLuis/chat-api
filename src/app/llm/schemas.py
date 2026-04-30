@@ -134,3 +134,45 @@ class ErrorResponse(BaseModel):
             ]
         }
     )
+
+
+# 提示词相关参数，做提示词ab测试共同的参数
+class PromptRef(BaseModel):
+    prompt_id: str
+    prompt_version: str="v1"
+    prompt_vars: dict[str, Any] = {}
+
+
+# 提示词对比请求
+class PromptCompareRequest(BaseModel):
+    provider: Literal["mock", "ollama"] = "mock"
+    messages: List[ChatMessage]
+    prompt_a: PromptRef
+    prompt_b: PromptRef
+    temperature: float = 0.7
+    top_p: float = 0.9
+    max_tokens: int = 256
+
+# 提示词对比项
+class PromptCompareItem(BaseModel):
+    trace_id: str
+    answer: str
+    metadata: ChatMetadata
+
+# 提示词对比指标
+class PromptCompareMetrics(BaseModel):
+    latency_ms_a: int
+    latency_ms_b: int
+    diff_latency_ms: int
+    output_chars_a: int
+    output_chars_b: int
+    output_chars_diff: int
+
+# 提示词对比响应体
+class PromptCompareResponse(BaseModel):
+    compare_group_id: str
+    a: PromptCompareItem
+    b: PromptCompareItem
+    metrics: PromptCompareMetrics
+
+

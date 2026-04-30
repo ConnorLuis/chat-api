@@ -15,6 +15,7 @@ def test_demo_page_basic_contract():
     html_content = response.text.lower()
 
     assert "/chat/stream" in html_content
+    assert "/prompt/compare" in html_content
 
     # 验证包含SSE事件相关关键字（确保SSE解析逻辑完整）
     assert "event:" in html_content
