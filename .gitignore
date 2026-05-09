@@ -17,5 +17,5 @@ __pycache__/
 # Env
 .env
 .venv/
-runs/
+/runs/
 .idea/
