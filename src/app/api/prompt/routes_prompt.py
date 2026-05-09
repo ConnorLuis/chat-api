@@ -1,5 +1,4 @@
 import time
-from pathlib import Path
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Body
@@ -93,23 +92,3 @@ def prompt_compare(body: PromptCompareRequest = Body(...)):
     metrics = PromptCompareMetrics(latency_ms_a=a.metadata.latency_ms, latency_ms_b=b.metadata.latency_ms, diff_latency_ms=a.metadata.latency_ms - b.metadata.latency_ms,
                                   output_chars_a=len(a.answer), output_chars_b=len(b.answer), output_chars_diff=len(a.answer) - len(b.answer))
     return PromptCompareResponse(compare_group_id=compare_group_id, a=a, b=b, metrics=metrics)
-
-
-@router.get("/prompts", response_model= PromptsListResponse)
-def list_prompts():
-    prompts_dir = Path(settings.PROMPTS_DIR)
-    prompts: dict[str, list[str]] = {}
-    if not prompts_dir.exists():
-        return {"prompts": prompts}
-
-    for prompt_dir in  prompts_dir.iterdir():
-        if not prompt_dir.is_dir() or prompt_dir.name.startswith("."):
-            continue
-        versions: list[str] = []
-        for f in prompt_dir.iterdir():
-            if (f.is_file() and f.suffix.lower() == ".md" and not f.name.startswith(".")):
-                versions.append(f.stem)
-        versions.sort()
-        prompts[prompt_dir.name] = versions
-    return {"prompts": prompts}
-
