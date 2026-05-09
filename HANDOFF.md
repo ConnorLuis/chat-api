@@ -1,6 +1,6 @@
-开始新对话前：**“继续 chat-api 计划，从 Day15 开始（Prompt 列表 + 回放 API）。”**
+开始新对话前：**“继续 chat-api 计划，从 Day16 开始（RAG 最小闭环）。”**
 
-# HANDOFF（给新对话用，更新至 Day14）
+# HANDOFF（给新对话用，更新至 Day15）
 - 环境：WSL2 Ubuntu + conda env=chatapi (Python 3.10)
 - 项目：`~/projects/chat-api`（GitHub: ConnorLuis/chat-api，branch master）
 - Ollama：安装在 Windows；模型 `qwen2.5:7b` 已 pull
@@ -13,7 +13,7 @@
   - `OLLAMA_TIMEOUT_S`（默认 `60`）
   - `RUN_LOG_PATH`（默认 `runs/prompt_runs.jsonl`）
 
-## 已完成进度（Day1–Day14）
+## 已完成进度（Day1–Day15）
 - Day1：`GET /health` OK
 - Day2：`POST /chat`（mock + schemas）、全局中间件（`x-trace-id` + latency log）、`POST /chat/stream`（mock streaming）OK
 - Day3：可插拔引擎 `LLMEngine`（mock/ollama）；`ChatRequest` 增加 `provider=mock|ollama`
@@ -26,25 +26,18 @@
 - Day10：OpenAPI /docs 增强：schemas examples + 路由 summary/description/responses
 - Day11：新增 `/demo` 流式聊天演示页（fetch POST + ReadableStream 解析 SSE）
 - Day12：Demo 增强 Stop/Abort（AbortController）；AbortError 不视为业务错误
-- Day13：PromptHub 最小闭环：
-  - Prompt Registry：`prompts/<prompt_id>/<version>.md`
-  - `/chat` 与 `/chat/stream` 支持 `prompt_id/prompt_version/prompt_vars`（服务端注入 system prompt）
-  - `meta/usage/error` 事件携带 prompt_id/version
-  - run log（JSONL）落盘：trace_id/provider/model/latency_ms/token_events/prompt_id/prompt_version
-  - Demo 增强：复制 trace_id / 复制 curl / 清空输出（配合 Stop/Abort）
-- Day14：Prompt A/B Compare：
-  - 新增 `POST /prompt/compare`：同一输入跑两套 prompt（A/B），返回并列结果 + 指标
-  - run log（JSONL）新增：`compare_group_id + variant(A/B) + mode=compare`，并记录生成参数（temperature/top_p/max_tokens）
-  - Demo 支持 Stream/Compare 模式切换，Compare 显示 group_id、A/B 输出、metrics，Copy Curl 可复现
-  - 新增 compare 契约测试：`tests/test_prompt_compare_contract.py`
-  - 离线回放工具：`scripts/replay_compare.py`（按 compare_group_id 回放 A/B）
+- Day13：PromptHub 最小闭环：prompt_id/version + run log + demo 增强
+- Day14：Prompt A/B Compare：`POST /prompt/compare` + run log compare_group_id + demo compare 模式 + replay 工具 + 契约测试
+- Day15：PromptHub Query APIs：
+  - `GET /prompts`：扫描 prompts 目录，列出 prompt_id 与版本
+  - `GET /runs/trace/{trace_id}`：按 trace_id 回放查询（找不到 404；返回 records + bad_lines）
+  - `GET /runs/compare/{compare_group_id}`：按 group 回放 A/B（A/B 排序 + summary；bad_lines 容错）
+  - 新增 3 个 Day15 契约测试；pytest 全绿（21 passed）
 
 ## 当前状态（可用验收）
-- mock：`/health`、`/chat`、`/chat/stream`、`/demo`、`/prompt/compare` 全部 OK
+- mock：`/health`、`/chat`、`/chat/stream`、`/demo`、`/prompt/compare`、`/prompts`、`/runs/*` 全部 OK
 - ollama：可达时 `/chat`、`/chat/stream`、`/prompt/compare` OK；不可达时 `/chat`=502(detail 结构化)，`/chat/stream`=200 + `event:error`
 
-## 下一步（Day15）
-- `GET /prompts`：列出 prompt_id 与版本（扫描 prompts 目录）
-- `GET /runs/{trace_id}`：按 trace_id 回放查询（从 JSONL 查）
-- `GET /runs/compare/{compare_group_id}`：按 group 回放查询（将 replay 能力 API 化）
-- README 收尾：补齐 PromptHub/Compare/Replay 的使用与演示步骤
+## 下一步（Day16）
+- RAG 最小闭环：KB（上传文本/markdown）→ chunk → embedding → 检索 → 带引用回答
+- 最小评测脚本：20 条 QA，输出准确率/引用命中率/延迟（先粗糙闭环）

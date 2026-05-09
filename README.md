@@ -349,3 +349,54 @@ Compare 模式会展示：
 - A/B 输出并列
 - metrics（latency/output diff）
 并支持 Copy Curl 复现 compare 请求。
+
+---
+
+## PromptHub Query APIs (Day15)
+
+Day15 将 PromptHub 从“可用”升级为“可查询系统”，新增 3 个接口：
+
+### 1) List prompts
+
+```bash
+curl -s http://localhost:8000/prompts | cat
+```
+
+返回示例（结构）：
+
+```json
+{"prompts":{"chat":["v1","v2"],"qa_strict":["v1"]}}
+```
+
+### 2) Replay by trace_id
+
+```bash
+curl -s http://localhost:8000/runs/trace/<trace_id> | cat
+```
+
+* 找不到：HTTP 404
+* 返回包含 `records` 与 `bad_lines`
+
+### 3) Replay compare by compare_group_id
+
+```bash
+curl -s http://localhost:8000/runs/compare/<compare_group_id> | cat
+```
+
+返回包含：
+- `records`（按 A/B 排序）
+- `summary`（latency/output diff）
+- `bad_lines`
+
+---
+
+### RUN_LOG_PATH（测试/调试）
+
+默认写入：`runs/prompt_runs.jsonl`  
+你可以通过环境变量覆盖：
+
+```bash
+export RUN_LOG_PATH=/tmp/prompt_runs.jsonl
+```
+
+注意：环境变量只影响**启动服务的那个进程**；修改后需要重启 uvicorn 才会生效。

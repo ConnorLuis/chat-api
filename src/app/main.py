@@ -2,7 +2,8 @@ from fastapi import FastAPI
 
 from src.app.api.routes_chat import router as chat_router
 from src.app.api.routes_demo import router as demo_router
-from src.app.api.routes_prompt import router as prompt_router
+from src.app.api.routes_prompts import router as prompts_router
+from src.app.api.routes_runs import router as run_router
 from src.app.core.logging import install_logging_middleware, setup_logging
 
 # # 项目启动时初始化日志
@@ -27,4 +28,5 @@ def health():
 """
 app.include_router(chat_router)
 app.include_router(demo_router)
-app.include_router(prompt_router)
+app.include_router(prompts_router)
+app.include_router(run_router)

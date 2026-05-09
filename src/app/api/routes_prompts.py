@@ -1,24 +1,22 @@
 import time
-from typing import Annotated
+from pathlib import Path
 from uuid import uuid4
 
-from fastapi import APIRouter, Request, HTTPException, Body
+from fastapi import APIRouter, HTTPException, Body
 
 from src.app.api.routes_chat import engine_model
 from src.app.core.settings import settings
 from src.app.core.errors import build_error
-from src.app.core.logging import get_trace_id
 from src.app.core.prompt_registry import PromptRegistry, ensure_system_prompt
 from src.app.core.run_logger import append_jsonl
 from src.app.llm.engines import get_engine
-from src.app.llm.schemas import PromptCompareResponse, PromptCompareRequest, PromptCompareItem, PromptRef, \
-    PromptCompareMetrics
+from src.app.llm.schemas import PromptCompareResponse, PromptCompareRequest, PromptCompareItem, PromptRef, PromptCompareMetrics, PromptsListResponse
 
 router = APIRouter()
 prompt_registry = PromptRegistry(settings.PROMPTS_DIR)
 
 @router.post("/prompt/compare",  response_model=PromptCompareResponse)
-def prompt_compare(req: Request, body: PromptCompareRequest = Body(...)):
+def prompt_compare(body: PromptCompareRequest = Body(...)):
 
     compare_group_id = str(uuid4())
     engine = get_engine(body.provider)
@@ -97,4 +95,21 @@ def prompt_compare(req: Request, body: PromptCompareRequest = Body(...)):
     return PromptCompareResponse(compare_group_id=compare_group_id, a=a, b=b, metrics=metrics)
 
 
+@router.get("/prompts", response_model= PromptsListResponse)
+def list_prompts():
+    prompts_dir = Path(settings.PROMPTS_DIR)
+    prompts: dict[str, list[str]] = {}
+    if not prompts_dir.exists():
+        return {"prompts": prompts}
+
+    for prompt_dir in  prompts_dir.iterdir():
+        if not prompt_dir.is_dir() or prompt_dir.name.startswith("."):
+            continue
+        versions: list[str] = []
+        for f in prompt_dir.iterdir():
+            if (f.is_file() and f.suffix.lower() == ".md" and not f.name.startswith(".")):
+                versions.append(f.stem)
+        versions.sort()
+        prompts[prompt_dir.name] = versions
+    return {"prompts": prompts}
 

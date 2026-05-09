@@ -175,4 +175,31 @@ class PromptCompareResponse(BaseModel):
     b: PromptCompareItem
     metrics: PromptCompareMetrics
 
+# 提示词列表响应体
+class PromptsListResponse(BaseModel):
+    prompts: dict[str, list[str]]
 
+# 运行记录
+class RunRecord(BaseModel):
+    trace_id: str
+    mode: str
+    provider: str
+    model: str
+    prompt_id: Optional[str] = None
+    prompt_version: Optional[str] = None
+    latency_ms: int
+    token_events: Optional[int] = None
+    output_chars: Optional[int] = None
+    prompt_chars: Optional[int] = None
+    error: Optional[str] = None
+    compare_group_id: Optional[str] = None
+    variant: Optional[str] = None
+    temperature: Optional[float] = None
+    top_p: Optional[float] = None
+    max_tokens: Optional[int] = None
+
+# 运行踪迹响应体
+class RunsTraceResponse(BaseModel):
+    trace_id: str
+    records: List[RunRecord]
+    bad_lines: int
