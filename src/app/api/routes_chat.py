@@ -4,9 +4,9 @@ from fastapi import Body
 from fastapi import APIRouter, Request, HTTPException
 
 from src.app.core.errors import build_error
-from src.app.core.logging import get_trace_id, logger  # 链路追踪ID
-from src.app.core.prompt_registry import PromptRegistry, ensure_system_prompt
-from src.app.core.run_logger import append_jsonl
+from src.app.core.logging import get_trace_id  # 链路追踪ID
+from src.app.llm.prompt_registry import PromptRegistry, ensure_system_prompt
+from src.app.llm.run_logger import append_jsonl
 from src.app.core.settings import settings
 from src.app.llm.schemas import ChatRequest, ChatResponse, ErrorResponse # 请求/响应模型
 from src.app.llm.engines import get_engine # 引擎工厂函数

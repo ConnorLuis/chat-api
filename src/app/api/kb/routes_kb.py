@@ -2,8 +2,8 @@ import time
 import uuid
 from fastapi import APIRouter, Query, HTTPException, Request
 
-from src.app.core import kb_store, kb_chunking, kb_chroma_store
-from src.app.core.kb_embeddings import get_embedding_engine
+from src.app.kb import store, chunking, chroma_store
+from src.app.kb.embeddings import get_embedding_engine
 from src.app.core.settings import settings
 from src.app.kb.schemas import DocumentResponse, DocumentRequest, SearchResponse, Hit
 
@@ -36,16 +36,16 @@ async def create_document(request: DocumentRequest, http_request: Request):
     trace_id = getattr(http_request.state, "trace_id", None) or http_request.headers.get("x-trace-id") or f"tr-{uuid_like_string()}"
     # 保存原文
     # 内部会自动创建本地目录，并向docs.jsonl追加元数据
-    doc_id = kb_store.save_document(
+    doc_id = store.save_document(
         title=request.title or "Untitled",
         text=request.text,
         source=request.source
     )
     # 切分文本成块
-    chunks_data = kb_chunking.split_text(request.text, settings.KB_CHUNK_SIZE, settings.KB_CHUNK_OVERLAP)
+    chunks_data = chunking.split_text(request.text, settings.KB_CHUNK_SIZE, settings.KB_CHUNK_OVERLAP)
     chunks_texts = [c.text for c in chunks_data]
     # 获取向量数据库的collection
-    collection = kb_chroma_store.get_collection(settings.KB_CHROMA_DIR, settings.KB_COLLECTION, space="cosine")
+    collection = chroma_store.get_collection(settings.KB_CHROMA_DIR, settings.KB_COLLECTION, space="cosine")
 
 
     # 向量化chunk，批量计算所有chunk的向量
@@ -70,7 +70,7 @@ async def create_document(request: DocumentRequest, http_request: Request):
 
         chroma_metadatas.append(meta)
     # 更新到chroma库
-    kb_chroma_store.upsert_chunks(collection=collection, doc_id=doc_id, chunks=chunks_texts, embeddings=embeddings, metadatas=chroma_metadatas)
+    chroma_store.upsert_chunks(collection=collection, doc_id=doc_id, chunks=chunks_texts, embeddings=embeddings, metadatas=chroma_metadatas)
 
     latency_ms = int((time.perf_counter() - start_time) * 1000)
     return DocumentResponse(doc_id=doc_id,
@@ -108,10 +108,10 @@ async def search_knowledge_base(
     trace_id = getattr(http_request.state, "trace_id", None) or http_request.headers.get(
         "x-trace-id") or f"tr-{uuid_like_string()}"
 
-    collection = kb_chroma_store.get_collection(settings.KB_CHROMA_DIR, settings.KB_COLLECTION, space="cosine")
+    collection = chroma_store.get_collection(settings.KB_CHROMA_DIR, settings.KB_COLLECTION, space="cosine")
     engine = get_engine()
     query_vector = engine.embed_query(q)
-    hits_raw = kb_chroma_store.query(collection, query_vector, top_k=top_k)
+    hits_raw = chroma_store.query(collection, query_vector, top_k=top_k)
     hits = []
     for h in hits_raw:
         doc_id =  h["metadata"]["doc_id"]

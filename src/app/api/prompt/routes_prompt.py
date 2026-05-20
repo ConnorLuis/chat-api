@@ -6,10 +6,10 @@ from fastapi import APIRouter, HTTPException, Body
 from src.app.api.routes_chat import engine_model
 from src.app.core.settings import settings
 from src.app.core.errors import build_error
-from src.app.core.prompt_registry import PromptRegistry, ensure_system_prompt
-from src.app.core.run_logger import append_jsonl
+from src.app.llm.prompt_registry import PromptRegistry, ensure_system_prompt
+from src.app.llm.run_logger import append_jsonl
 from src.app.llm.engines import get_engine
-from src.app.llm.schemas import PromptCompareResponse, PromptCompareRequest, PromptCompareItem, PromptRef, PromptCompareMetrics, PromptsListResponse
+from src.app.llm.schemas import PromptCompareResponse, PromptCompareRequest, PromptCompareItem, PromptRef, PromptCompareMetrics
 
 router = APIRouter()
 prompt_registry = PromptRegistry(settings.PROMPTS_DIR)
