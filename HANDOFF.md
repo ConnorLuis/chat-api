@@ -1,6 +1,6 @@
-开始新对话前：**“继续 chat-api 计划，从 Day16 开始（RAG 最小闭环）。”**
+开始新对话前：**“继续 chat-api 计划，从 Day17 开始（RAG: 引用回答 + Chat 集成）。”**
 
-# HANDOFF（给新对话用，更新至 Day15）
+# HANDOFF（给新对话用，更新至 Day16）
 - 环境：WSL2 Ubuntu + conda env=chatapi (Python 3.10)
 - 项目：`~/projects/chat-api`（GitHub: ConnorLuis/chat-api，branch master）
 - Ollama：安装在 Windows；模型 `qwen2.5:7b` 已 pull
@@ -34,10 +34,18 @@
   - `GET /runs/compare/{compare_group_id}`：按 group 回放 A/B（A/B 排序 + summary；bad_lines 容错）
   - 新增 3 个 Day15 契约测试；pytest 全绿（21 passed）
 
+- Day16：RAG KB 最小闭环（Chroma）：
+  - `POST /kb/documents`：文本/markdown 入库（save → chunk → embedding → Chroma upsert），返回 `doc_id/chunks/metadata(trace_id,latency_ms)`
+  - `GET /kb/search`：topK 检索返回 `hits`（doc_id/chunk_id/score/text/source/title）+ `metadata(trace_id,latency_ms)`
+  - 配置项：`KB_DIR/KB_CHROMA_DIR/KB_COLLECTION/KB_CHUNK_SIZE/KB_CHUNK_OVERLAP/EMBEDDING_PROVIDER/EMBEDDING_MODEL/EMBEDDING_DIM`
+  - 新增契约测试：`test_kb_ingest_contract.py`、`test_kb_search_contract.py`（含 empty query 400）
+  - pytest 全绿（24 passed）
+
+
 ## 当前状态（可用验收）
 - mock：`/health`、`/chat`、`/chat/stream`、`/demo`、`/prompt/compare`、`/prompts`、`/runs/*` 全部 OK
 - ollama：可达时 `/chat`、`/chat/stream`、`/prompt/compare` OK；不可达时 `/chat`=502(detail 结构化)，`/chat/stream`=200 + `event:error`
 
-## 下一步（Day16）
-- RAG 最小闭环：KB（上传文本/markdown）→ chunk → embedding → 检索 → 带引用回答
+## 下一步（Day17）
+- RAG Chat 集成：/chat 支持 use_kb + kb_top_k，注入 topK chunks 作为 context，返回 citations（doc_id/chunk_id/source/title）
 - 最小评测脚本：20 条 QA，输出准确率/引用命中率/延迟（先粗糙闭环）

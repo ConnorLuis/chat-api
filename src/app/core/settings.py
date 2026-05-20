@@ -25,13 +25,69 @@ class Settings:
     def OLLAMA_TIMEOUT_S(self) -> float:
         return float(getenv("OLLAMA_TIMEOUT_S", "60"))
 
+    # 提示词模板的地址
     @property
     def PROMPTS_DIR(self) -> str:
         return getenv("PROMPTS_DIR", "prompts")
 
+    # 运行后日志保存地址
     @property
     def RUN_LOG_PATH(self) -> str:
         return getenv("RUN_LOG_PATH", "runs/prompt_runs.jsonl")
 
+    # knowledge book 地址
+    @property
+    def KB_DIR(self) -> str:
+        return getenv("KB_DIR", "kb")
+
+    # kb的向量数据库chroma地址，Chroma persist 目录
+    @property
+    def KB_CHROMA_DIR(self) -> str:
+        return getenv("KB_CHROMA_DIR", os.path.join(self.KB_DIR, "chroma"))
+
+    # 向量数据库chroma的collection名
+    @property
+    def KB_COLLECTION(self) -> str:
+        return getenv("KB_COLLECTION", "kb_chunks")
+
+    # 切块大小
+    @property
+    def KB_CHUNK_SIZE(self) -> int:
+        return int(getenv("KB_CHUNK_SIZE", "800"))
+
+    # 重叠大小
+    @property
+    def KB_CHUNK_OVERLAP(self) -> int:
+        return int(getenv("KB_CHUNK_OVERLAP", "120"))
+
+    # 检索返回多少条
+    @property
+    def KB_TOP_K(self) -> int:
+        return int(getenv("KB_TOP_K", "5"))
+
+    # 决定用 mock 还是 SentenceTransformer
+    @property
+    def EMBEDDING_PROVIDER(self) -> str:
+        return getenv("EMBEDDING_PROVIDER", "mock")
+
+    # hf 模型路径/名字
+    @property
+    def EMBEDDING_MODEL(self) -> str:
+        return getenv("EMBEDDING_MODEL", "/mnt/f/LLM/maidalun/bce-embedding-base_v1")
+
+    # 文档地址
+    @property
+    def DOCS_DIR(self) -> str:
+        return getenv("DOCS_DIR", os.path.join(self.KB_DIR, "docs"))
+
+    #索引文件类型
+    @property
+    def INDEX_FILE(self) -> str:
+        return getenv("INDEX_FILE", os.path.join(self.KB_DIR, "docs.jsonl"))
+
+    # 文本向量化后维度
+    @property
+    def EMBEDDING_DIM(self) -> str:
+        return getenv("EMBEDDING_DIM", "512")
 
 settings = Settings()

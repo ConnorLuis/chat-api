@@ -400,3 +400,45 @@ export RUN_LOG_PATH=/tmp/prompt_runs.jsonl
 ```
 
 注意：环境变量只影响**启动服务的那个进程**；修改后需要重启 uvicorn 才会生效。
+
+---
+
+## Knowledge Base (RAG Day16)
+
+新增 KB 模块，完成 RAG 的“检索最小闭环”（Index + Retrieve）。
+
+### 1) Ingest document
+
+```bash
+curl -s -X POST http://localhost:8000/kb/documents \
+  -H "Content-Type: application/json" \
+  -d '{"title":"t","source":"manual","text":"RAG 是 Retrieval-Augmented Generation，用于检索增强生成。"}' | cat
+```
+
+返回包含：`doc_id`、`chunks`、`metadata.trace_id/latency_ms`。
+
+### 2) Search (topK)
+
+```bash
+curl -s "http://localhost:8000/kb/search?q=RAG&top_k=3" | cat
+```
+
+返回结构（关键字段）：
+- `hits[]`: `doc_id/chunk_id/score/text/source/title`
+- `metadata.trace_id/latency_ms`
+
+### KB Environment variables
+
+* `KB_DIR` (default: `kb`)
+* `KB_CHROMA_DIR` (default: `${KB_DIR}/chroma`)
+* `KB_COLLECTION` (default: `kb_chunks`)
+* `KB_CHUNK_SIZE` (default: `800`)
+* `KB_CHUNK_OVERLAP` (default: `120`)
+* `KB_TOP_K` (default: `5`)
+* `EMBEDDING_PROVIDER` (default: `mock`, options: `mock|hf`)
+* `EMBEDDING_MODEL` (hf provider)
+* `EMBEDDING_DIM` (mock provider)
+
+### Notes
+- 测试默认使用 `EMBEDDING_PROVIDER=mock`（稳定、无外部下载）。
+- 如需真实语义检索演示，可切换为 `EMBEDDING_PROVIDER=hf` 并设置 `EMBEDDING_MODEL`（会下载/加载模型，首次较慢）。
