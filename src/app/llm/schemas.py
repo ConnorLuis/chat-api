@@ -31,6 +31,10 @@ class ChatRequest(BaseModel):
     prompt_id: str | None = None
     prompt_version: str | None = None
     prompt_vars: dict | None = None
+
+    use_kb: bool = False
+    kb_top_k: int | None = None
+
     # 模型配置：添加JSON Schema示例，用于自动生成接口文档
     model_config = ConfigDict(
         json_schema_extra={
@@ -58,6 +62,18 @@ class ChatRequest(BaseModel):
             ]
         })
 
+class Citation(BaseModel):
+    doc_id: str
+    chunk_id: str
+    source: str
+    title: str | None = None
+
+class RagMetadata(BaseModel):
+    enabled: bool
+    top_k: int
+    citations: List[Citation]
+    hits: Optional[int] = None
+
 # 封装响应的元信息（引擎类型、模型名、响应耗时），作为 ChatResponse 的可选字段
 class ChatMetadata(BaseModel):
     provider: str
@@ -66,6 +82,7 @@ class ChatMetadata(BaseModel):
     latency_ms: int
     prompt_id: str | None = None
     prompt_version: str | None = None
+    rag: Optional[RagMetadata] = None
 
 # ChatResponse响应模型
 class ChatResponse(BaseModel):
@@ -140,7 +157,7 @@ class ErrorResponse(BaseModel):
 class PromptRef(BaseModel):
     prompt_id: str
     prompt_version: str="v1"
-    prompt_vars: dict[str, Any] = {}
+    prompt_vars: dict[str, Any] = Field(default_factory=dict)
 
 
 # 提示词对比请求

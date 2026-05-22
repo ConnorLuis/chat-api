@@ -5,10 +5,14 @@ from fastapi import APIRouter, Request, HTTPException
 
 from src.app.core.errors import build_error
 from src.app.core.logging import get_trace_id  # 链路追踪ID
+from src.app.kb import chroma_store
+from src.app.kb.embeddings import get_embedding_engine
+from src.app.kb.rag_context import build_rag_context
+from src.app.kb.schemas import Hit
 from src.app.llm.prompt_registry import PromptRegistry, ensure_system_prompt
 from src.app.llm.run_logger import append_jsonl
 from src.app.core.settings import settings
-from src.app.llm.schemas import ChatRequest, ChatResponse, ErrorResponse # 请求/响应模型
+from src.app.llm.schemas import ChatRequest, ChatResponse, ErrorResponse, RagMetadata  # 请求/响应模型
 from src.app.llm.engines import get_engine # 引擎工厂函数
 from fastapi.responses import StreamingResponse # 流式响应
 from src.app.core.sse import sse_event # SSE格式生成函数
@@ -42,6 +46,14 @@ CHAT_OPENAPI_EXAMPLES = {
         },
     },
 }
+
+def _last_user_text(messages) -> str | None:
+    for m in reversed(messages or []):
+        if getattr(m, "role", None) == "user":
+            c = (getattr(m, "content", None) or "").strip()
+            if c:
+                return c
+    return None
 
 # 普通的同步聊天接口
 # 从请求的消息列表中提取用户最后一次发送的内容，拼接成模拟回复返回。
@@ -77,7 +89,52 @@ def chat(req: Request, body: Annotated[ChatRequest, Body(openapi_examples=CHAT_O
     if prompt_id:
         template = prompt_registry.get(prompt_id, prompt_version)
         system_text = prompt_registry.render(template, prompt_vars)
-        messages = ensure_system_prompt(messages, system_text)
+    rag_meta = None
+    context = None
+    hits = []
+    top_k = body.kb_top_k or settings.KB_TOP_K
+    rag_error = None
+    try:
+        if body.use_kb:
+            collection = chroma_store.get_collection(settings.KB_CHROMA_DIR, settings.KB_COLLECTION, space="cosine")
+            embed_engine = get_embedding_engine(settings)
+            query = _last_user_text(messages)
+            if not query:
+                # KB 开启但没有可用 query：当作无命中，继续走普通 chat
+                rag_meta = RagMetadata(enabled=True, top_k=top_k, citations=[], hits=0)
+                context = None
+            else:
+                query_vector = embed_engine.embed_query(query)
+                hits_raw = chroma_store.query(collection, query_vector, top_k)
+                for h in hits_raw:
+                    doc_id = h["metadata"]["doc_id"]
+                    chunk_id = h["metadata"].get("chunk_id", h["id"])
+                    score = h["score"]
+                    text = h["text"]
+                    source = h["metadata"]["source"]
+                    title = h["metadata"].get("title")
+                    hit = Hit(doc_id=doc_id, chunk_id=chunk_id, score=score, text=text, source=source, title=title)
+                    hits.append(hit)
+                context_text, citations = build_rag_context(hits=hits)
+                if not hits:
+                    context = None
+                    rag_meta = RagMetadata(enabled=True, top_k=top_k, citations=[], hits=0)
+                else:
+                    context = f"你是一个严谨助手 仅基于以下资料回答，并在回答末尾列出引用编号 \n\n<CONTEXT>\n{context_text}"
+                    rag_meta = RagMetadata(enabled=True, top_k=top_k, citations=citations, hits=len(hits))
+    except Exception as e:
+        rag_error = str(e)
+        rag_meta = RagMetadata(enabled=True, top_k=top_k, citations=[], hits=0)
+        context = None
+    context_chars = len(context) if context else 0
+    parts = []
+    if system_text:
+        parts.append(system_text)
+    if context:
+        parts.append(context)
+    final_system_text = "\n\n".join(parts) if parts else None
+    if final_system_text:
+        messages = ensure_system_prompt(messages, final_system_text)
     try:
         # 调用引擎的非流式generate方法生成回复（Mock返回模拟内容，Ollama调用真实模型）
         answer = engine.generate(messages, body.temperature, body.top_p, body.max_tokens)
@@ -97,6 +154,10 @@ def chat(req: Request, body: Annotated[ChatRequest, Body(openapi_examples=CHAT_O
             "temperature": body.temperature,
             "top_p": body.top_p,
             "max_tokens": body.max_tokens,
+            "rag_enabled": body.use_kb,
+            "rag_hits": rag_meta.hits if rag_meta else 0,
+            "rag_error": rag_error,
+            "context_chars": context_chars,
             "error": str(e)
         }
         append_jsonl(settings.RUN_LOG_PATH, record)
@@ -108,7 +169,8 @@ def chat(req: Request, body: Annotated[ChatRequest, Body(openapi_examples=CHAT_O
         "model": engine_model(engine),
         "latency_ms": latency_ms,
         "prompt_id": prompt_id or "none",
-        "prompt_version": prompt_version if prompt_id else "none"
+        "prompt_version": prompt_version if prompt_id else "none",
+        "rag": rag_meta
     }
 
     # 打印日志：便于后端监控
@@ -125,6 +187,10 @@ def chat(req: Request, body: Annotated[ChatRequest, Body(openapi_examples=CHAT_O
         "temperature": body.temperature,
         "top_p": body.top_p,
         "max_tokens": body.max_tokens,
+        "rag_enabled": body.use_kb,
+        "rag_hits": rag_meta.hits if rag_meta else 0,
+        "rag_error": rag_error,
+        "context_chars": context_chars,
     }
     append_jsonl(settings.RUN_LOG_PATH, record)
     # 返回符合ChatResponse模型的响应
