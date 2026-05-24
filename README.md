@@ -486,3 +486,77 @@ curl -s -X POST http://localhost:8000/chat \
 - `metadata.rag.top_k`
 - `metadata.rag.hits`
 - `metadata.rag.citations[]`
+
+---
+
+## RAG Streaming (Day18)
+
+`POST /chat/stream` 支持 RAG（检索增强生成）：请求体新增 `use_kb` / `kb_top_k`。当 `use_kb=true` 时：先 KB topK 检索 → 将命中 chunks 作为 context 注入 system prompt → 流式输出答案。
+
+### Stream RAG fields
+
+SSE 事件中会携带 `rag`：
+- `meta.data.rag`: `enabled/top_k/hits/context_chars`
+- `usage.data.rag`: `enabled/top_k/hits/context_chars/citations/error`
+- `error.data.rag`（若下游失败）: `enabled/top_k/hits/context_chars/citations_count/error`
+
+### Example
+
+```bash
+curl -N -X POST http://localhost:8000/chat/stream \
+  -H "Content-Type: application/json" \
+  -d '{
+    "provider":"ollama",
+    "messages":[{"role":"user","content":"RAG 的最小闭环包括哪些步骤？"}],
+    "prompt_id":"chat","prompt_version":"v1",
+    "use_kb": true, "kb_top_k": 3,
+    "max_tokens": 128
+  }'
+```
+
+---
+
+## KB Documents Management (Day18)
+
+新增 KB 管理接口：
+
+### 1) List documents
+
+```bash
+curl -s "http://localhost:8000/kb/documents?limit=50&offset=0" | cat
+curl -s "http://localhost:8000/kb/documents?include_deleted=true" | cat
+```
+
+### 2) Delete a document
+
+```bash
+curl -s -X DELETE "http://localhost:8000/kb/documents/<doc_id>" | cat
+```
+
+删除行为：Chroma 删除（where doc_id）+ 删除 `docs/<doc_id>.md`（若存在）+ `docs.jsonl` 追加 tombstone（deleted=true）。
+
+---
+
+## Demo RAG (Day18)
+
+`/demo` 增强：
+- RAG 开关 + top_k 输入框
+- 同步/流式均支持 citations 展示
+- 修复 SSE 解析（CRLF/data: 兼容 + 只解析完整块）
+- Copy Curl 输出 bash 续行 `\`（避免字面量 `\n` 引起 curl 报错）
+
+---
+
+## Tests (Day18)
+
+新增 Day18 契约测试：
+- Demo：RAG UI 关键字存在（可演示能力锁死）
+- Stream：RAG meta/usage/done 顺序与 rag.citations 结构锁死（含 KB 空降级）
+- KB：documents list/delete 行为锁死（含 include_deleted）
+
+当前：
+
+```bash
+pytest -q
+# 30 passed
+```

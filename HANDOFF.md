@@ -1,6 +1,6 @@
-开始新对话前：**“继续 chat-api 计划，从 Day18 开始（Demo RAG + Stream RAG + KB 管理）。”**
+开始新对话前：**“继续 chat-api 计划，从 Day18 开始（Stream RAG + Demo RAG + KB 管理 + 契约测试）。”**
 
-# HANDOFF（给新对话用，更新至 Day17）
+# HANDOFF（给新对话用，更新至 Day18）
 - 环境：WSL2 Ubuntu + conda env=chatapi (Python 3.10)
 - 项目：`~/projects/chat-api`（GitHub: ConnorLuis/chat-api，branch master）
 - Ollama：安装在 Windows；模型 `qwen2.5:7b` 已 pull
@@ -13,7 +13,7 @@
   - `OLLAMA_TIMEOUT_S`（默认 `60`）
   - `RUN_LOG_PATH`（默认 `runs/prompt_runs.jsonl`）
 
-## 已完成进度（Day1–Day15）
+## 已完成进度（Day1–Day18）
 - Day1：`GET /health` OK
 - Day2：`POST /chat`（mock + schemas）、全局中间件（`x-trace-id` + latency log）、`POST /chat/stream`（mock streaming）OK
 - Day3：可插拔引擎 `LLMEngine`（mock/ollama）；`ChatRequest` 增加 `provider=mock|ollama`
@@ -32,29 +32,25 @@
   - `GET /prompts`：扫描 prompts 目录，列出 prompt_id 与版本
   - `GET /runs/trace/{trace_id}`：按 trace_id 回放查询（找不到 404；返回 records + bad_lines）
   - `GET /runs/compare/{compare_group_id}`：按 group 回放 A/B（A/B 排序 + summary；bad_lines 容错）
-  - 新增 3 个 Day15 契约测试；pytest 全绿（21 passed）
-
 - Day16：RAG KB 最小闭环（Chroma）：
-  - `POST /kb/documents`：文本/markdown 入库（save → chunk → embedding → Chroma upsert），返回 `doc_id/chunks/metadata(trace_id,latency_ms)`
-  - `GET /kb/search`：topK 检索返回 `hits`（doc_id/chunk_id/score/text/source/title）+ `metadata(trace_id,latency_ms)`
-  - 配置项：`KB_DIR/KB_CHROMA_DIR/KB_COLLECTION/KB_CHUNK_SIZE/KB_CHUNK_OVERLAP/EMBEDDING_PROVIDER/EMBEDDING_MODEL/EMBEDDING_DIM`
-  - 新增契约测试：`test_kb_ingest_contract.py`、`test_kb_search_contract.py`（含 empty query 400）
-  - pytest 全绿（24 passed）
-
-- Day17：RAG Chat 集成（同步）：
-  - `/chat` 新增 `use_kb` + `kb_top_k`：检索 KB topK → context 注入 system prompt → 生成回答
-  - 响应 `metadata.rag` 返回结构化 citations（doc_id/chunk_id/source/title）与 hits 数
-  - 降级策略：query 为空 / KB 异常时 citations=[]、hits=0，chat 仍可用；run log 记录 `rag_error/context_chars`
-  - 新增契约测试：`tests/chat/test_chat_rag_contract.py`
-  - 整理 tests 目录：按领域拆分 `tests/chat|stream|kb|prompt|runs|demo|core`
-  - pytest 全绿（26 passed）
-
+  - `POST /kb/documents`：入库（save → chunk → embedding → Chroma upsert）
+  - `GET /kb/search`：topK 检索返回 hits（doc_id/chunk_id/score/text/source/title）
+  - 契约测试：`test_kb_ingest_contract.py`、`test_kb_search_contract.py`
+- Day17：RAG Chat（同步 `/chat`）：
+  - `use_kb/kb_top_k` 检索注入；响应 `metadata.rag` 返回结构化 citations
+  - 降级：KB 空/异常仍 200，citations=[]、hits=0；run log 记录 `rag_error/context_chars`
+  - 契约测试：`tests/chat/test_chat_rag_contract.py`
+- **Day18：RAG Stream + Demo + KB 管理 + 契约测试（本次新增）**
+  - `/chat/stream` 接入 RAG：`meta/usage/error` 带 `rag`（enabled/top_k/hits/context_chars/citations/error）
+  - Demo：增加 RAG 开关 + top_k 输入 + 引用展示；修复 SSE 解析（CRLF/data: 兼容、完整块解析）；修复 Copy Curl 续行
+  - KB 管理：`GET /kb/documents`（limit/offset/include_deleted），`DELETE /kb/documents/{doc_id}`（Chroma delete + md delete + tombstone）
+  - 新增契约测试：demo/stream/kb（Day18 相关）
+  - `pytest -q` 全绿：**30 passed**
 
 ## 当前状态（可用验收）
-- mock：`/health`、`/chat`、`/chat/stream`、`/demo`、`/prompt/compare`、`/prompts`、`/runs/*` 全部 OK
+- mock：`/health`、`/chat`、`/chat/stream`、`/demo`、`/prompt/compare`、`/prompts`、`/runs/*`、`/kb/*` 全部 OK
 - ollama：可达时 `/chat`、`/chat/stream`、`/prompt/compare` OK；不可达时 `/chat`=502(detail 结构化)，`/chat/stream`=200 + `event:error`
 
-## 下一步（Day18）
-- Demo 增强：/demo 增加 RAG 开关 + top_k 输入框 + 引用展示（优先做）
-- 流式接入：把 RAG 接入 `/chat/stream`（meta/usage/done 中体现 rag 信息，并写 run log）
-- KB 管理：新增 `/kb/documents` 列表与删除（为评测/运维铺路）
+## 下一步（Day19）
+- 最小评测脚本（20 条 QA）：输出准确率/引用命中率/延迟（先粗糙也行）。
+- 或者 KB 文档列表在 demo 上做一个只读展示（可选）。
