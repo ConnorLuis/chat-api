@@ -124,6 +124,7 @@ def chat(req: Request, body: Annotated[ChatRequest, Body(openapi_examples=CHAT_O
                     rag_meta = RagMetadata(enabled=True, top_k=top_k, citations=citations, hits=len(hits))
     except Exception as e:
         rag_error = str(e)
+        hits = []
         rag_meta = RagMetadata(enabled=True, top_k=top_k, citations=[], hits=0)
         context = None
     context_chars = len(context) if context else 0
@@ -170,7 +171,9 @@ def chat(req: Request, body: Annotated[ChatRequest, Body(openapi_examples=CHAT_O
         "latency_ms": latency_ms,
         "prompt_id": prompt_id or "none",
         "prompt_version": prompt_version if prompt_id else "none",
-        "rag": rag_meta
+        "rag": rag_meta,
+        "context_chars": context_chars,
+        "rag_error": rag_error,
     }
 
     # 打印日志：便于后端监控
@@ -270,11 +273,77 @@ async def chat_stream(req: Request, body: Annotated[ChatRequest, Body(openapi_ex
         if prompt_id:
             template = prompt_registry.get(prompt_id, prompt_version)
             system_text = prompt_registry.render(template, prompt_vars)
-            messages = ensure_system_prompt(messages, system_text)
+
+        rag_enabled = bool(body.use_kb)
+        top_k = body.kb_top_k or settings.KB_TOP_K
+        hits_list = []
+        hits = 0
+        citations = []
+        rag_meta = None
+        context = None
+        context_chars = 0
+        rag_error = None
+
+        try:
+            if rag_enabled:
+                collection = chroma_store.get_collection(settings.KB_CHROMA_DIR, settings.KB_COLLECTION, space="cosine")
+                embed_engine = get_embedding_engine(settings)
+                query = _last_user_text(messages)
+                if not query:
+                    context = None
+                    rag_meta = RagMetadata(enabled=True, top_k=top_k, citations=[], hits=0)
+                else:
+                    query_vector = embed_engine.embed_query(query)
+                    hits_raw = chroma_store.query(collection, query_vector, top_k)
+                    for h in hits_raw:
+                        doc_id = h["metadata"]["doc_id"]
+                        chunk_id = h["metadata"].get("chunk_id", h["id"])
+                        score = h["score"]
+                        text = h["text"]
+                        source = h["metadata"]["source"]
+                        title = h["metadata"].get("title")
+                        hit = Hit(doc_id=doc_id, chunk_id=chunk_id, score=score, text=text, source=source, title=title)
+                        hits_list.append(hit)
+                        hits = len(hits_list)
+                    context_text, citations = build_rag_context(hits=hits_list)
+                if not hits:
+                    context = None
+                    rag_meta = RagMetadata(enabled=True, top_k=top_k, citations=[], hits=0)
+                else:
+                    context = f"你是一个严谨助手 仅基于以下资料回答，并在回答末尾列出引用编号 \n\n<CONTEXT>\n{context_text}"
+                    rag_meta = RagMetadata(enabled=True, top_k=top_k, citations=citations, hits=hits)
+        except Exception as e:
+            rag_error = str(e)
+            citations = []
+            hits = 0
+            rag_meta = RagMetadata(enabled=True, top_k=top_k, citations=[], hits=0)
+            context = None
+
+        context_chars = len(context) if context else 0
+        parts = []
+        if system_text:
+            parts.append(system_text)
+        if context:
+            parts.append(context)
+        final_system_text = "\n\n".join(parts) if parts else None
+        if final_system_text:
+            messages = ensure_system_prompt(messages, final_system_text)
 
         # 把 trace / provider 发出去，前端好做初始化
-        yield sse_event("meta", {"trace_id": trace_id, "provider": engine.name, "model": engine_model(engine),"prompt_id": prompt_id or "none",
-        "prompt_version": prompt_version if prompt_id else "none"})
+        meta = {
+            "trace_id": trace_id,
+            "provider": engine.name,
+            "model": engine_model(engine),
+            "prompt_id": prompt_id or "none",
+            "prompt_version": prompt_version if prompt_id else "none",
+            "rag": {
+                "enabled": rag_enabled,
+                "top_k": top_k,
+                "hits": hits,
+                "context_chars": context_chars,
+            },
+        }
+        yield sse_event("meta", meta)
 
         output_chars = 0
         token_events = 0
@@ -289,6 +358,8 @@ async def chat_stream(req: Request, body: Annotated[ChatRequest, Body(openapi_ex
             # 计算耗时（毫秒）
             latency_ms = int((time.perf_counter() - start) * 1000)
 
+            citations_payload = [c.model_dump() if hasattr(c, "model_dump") else c for c in citations]
+
             # 推送使用统计（usage事件）：包含性能、模型、token数等
             usage = {
                 "trace_id": trace_id,
@@ -298,6 +369,14 @@ async def chat_stream(req: Request, body: Annotated[ChatRequest, Body(openapi_ex
                 "token_events": token_events,
                 "prompt_id": prompt_id or "none",
                 "prompt_version": prompt_version if prompt_id else "none",
+                "rag": {
+                    "enabled": rag_enabled,
+                    "top_k": top_k,
+                    "hits": hits,
+                    "context_chars": context_chars,
+                    "citations": citations_payload,
+                    "error": rag_error
+                },
             }
             yield sse_event("usage", usage)
             yield sse_event("done", "[DONE]") # 推送结束事件，前端停止接收
@@ -313,6 +392,12 @@ async def chat_stream(req: Request, body: Annotated[ChatRequest, Body(openapi_ex
                 "token_events": token_events,
                 "prompt_chars": len(system_text) if system_text else 0,
                 "output_chars": output_chars,
+                "rag_enabled": rag_enabled,
+                "kb_top_k":top_k,
+                "rag_hits": hits,
+                "context_chars": context_chars,
+                "rag_error": rag_error,
+                "citations_count": len(citations)
             })
 
         except Exception as e:
@@ -320,6 +405,14 @@ async def chat_stream(req: Request, body: Annotated[ChatRequest, Body(openapi_ex
             err = build_error(trace_id, engine.name, engine_model(engine), latency_ms, f"{engine.name} failed: {str(e)}")
             err["prompt_id"] = prompt_id or "none"
             err["prompt_version"] = prompt_version if prompt_id else "none"
+            err["rag"] = {
+                "enabled": rag_enabled,
+                "top_k": top_k,
+                "hits": hits,
+                "context_chars": context_chars,
+                "citations_count": len(citations),
+                "error": rag_error,
+            }
             # 异常时返回带trace_id的错误信息
             yield sse_event("error", err)
             # 流式异常也用 error 级别
@@ -337,6 +430,11 @@ async def chat_stream(req: Request, body: Annotated[ChatRequest, Body(openapi_ex
                 "temperature": body.temperature,
                 "top_p": body.top_p,
                 "max_tokens": body.max_tokens,
+                "rag_enabled": rag_enabled,
+                "kb_top_k": top_k,
+                "rag_hits": hits,
+                "context_chars": context_chars,
+                "rag_error": rag_error,
                 "error": str(e)
             })
 

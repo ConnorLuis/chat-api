@@ -9,9 +9,13 @@ from typing import Any
 
 # 统一数据为字符串（含 JSON 序列化）
 def _to_text(data: Any) -> str:
-    if isinstance(data, str):
-        return data
-    return json.dumps(data, ensure_ascii=False)
+    if isinstance(data, (dict, list)):
+        data_str = json.dumps(data, ensure_ascii=False)
+    elif data is None:
+        data_str = ""
+    else:
+        data_str = str(data)
+    return data_str
 
 """生成符合 SSE（Server-Sent Events，服务器推送事件）标准格式的字符串
     event: 事件类型message(正常消息)\error(错误)\done(流式结束)
@@ -24,4 +28,4 @@ def sse_event(event: str, data: Any) -> str:
     data_lines = "".join([f"data: {line}\n" for line in lines])
 
     # SSE block ends with a blank line -> "\n\n"
-    return f"event: {event}\n{data_lines}\n"
+    return f"event: {event}\n" + f"{data_lines}\n"

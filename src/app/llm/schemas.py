@@ -83,6 +83,8 @@ class ChatMetadata(BaseModel):
     prompt_id: str | None = None
     prompt_version: str | None = None
     rag: Optional[RagMetadata] = None
+    context_chars: int | None = None
+    rag_error: str | None = None
 
 # ChatResponse响应模型
 class ChatResponse(BaseModel):

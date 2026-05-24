@@ -442,3 +442,47 @@ curl -s "http://localhost:8000/kb/search?q=RAG&top_k=3" | cat
 ### Notes
 - 测试默认使用 `EMBEDDING_PROVIDER=mock`（稳定、无外部下载）。
 - 如需真实语义检索演示，可切换为 `EMBEDDING_PROVIDER=hf` 并设置 `EMBEDDING_MODEL`（会下载/加载模型，首次较慢）。
+
+---
+
+## RAG Chat (Day17)
+
+同步 `/chat` 支持检索增强（RAG），通过 KB topK 检索结果注入上下文，并返回结构化 citations。
+
+### Request fields
+
+在 `/chat` 的请求体中新增可选字段：
+
+- `use_kb` (bool, default: false)
+- `kb_top_k` (int, optional)
+
+当 `use_kb=true`：
+- 先调用 KB 检索（Chroma topK）
+- 将 hits 作为 context 注入 system prompt
+- 在响应 `metadata.rag` 中返回 `citations`（doc_id/chunk_id/source/title）
+
+### Example
+
+```bash
+# 先入库（Day16）
+curl -s -X POST http://localhost:8000/kb/documents \
+  -H "Content-Type: application/json" \
+  -d '{"text":"RAG 是 Retrieval-Augmented Generation，用于检索增强生成。","source":"manual"}' | cat
+
+# 再调用 /chat(use_kb=true)
+curl -s -X POST http://localhost:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "provider":"mock",
+    "messages":[{"role":"user","content":"什么是RAG？"}],
+    "use_kb": true,
+    "kb_top_k": 3
+  }' | cat
+```
+
+响应 `metadata` 中会包含：
+
+- `metadata.rag.enabled`
+- `metadata.rag.top_k`
+- `metadata.rag.hits`
+- `metadata.rag.citations[]`

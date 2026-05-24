@@ -1,6 +1,6 @@
-开始新对话前：**“继续 chat-api 计划，从 Day17 开始（RAG: 引用回答 + Chat 集成）。”**
+开始新对话前：**“继续 chat-api 计划，从 Day18 开始（Demo RAG + Stream RAG + KB 管理）。”**
 
-# HANDOFF（给新对话用，更新至 Day16）
+# HANDOFF（给新对话用，更新至 Day17）
 - 环境：WSL2 Ubuntu + conda env=chatapi (Python 3.10)
 - 项目：`~/projects/chat-api`（GitHub: ConnorLuis/chat-api，branch master）
 - Ollama：安装在 Windows；模型 `qwen2.5:7b` 已 pull
@@ -41,11 +41,20 @@
   - 新增契约测试：`test_kb_ingest_contract.py`、`test_kb_search_contract.py`（含 empty query 400）
   - pytest 全绿（24 passed）
 
+- Day17：RAG Chat 集成（同步）：
+  - `/chat` 新增 `use_kb` + `kb_top_k`：检索 KB topK → context 注入 system prompt → 生成回答
+  - 响应 `metadata.rag` 返回结构化 citations（doc_id/chunk_id/source/title）与 hits 数
+  - 降级策略：query 为空 / KB 异常时 citations=[]、hits=0，chat 仍可用；run log 记录 `rag_error/context_chars`
+  - 新增契约测试：`tests/chat/test_chat_rag_contract.py`
+  - 整理 tests 目录：按领域拆分 `tests/chat|stream|kb|prompt|runs|demo|core`
+  - pytest 全绿（26 passed）
+
 
 ## 当前状态（可用验收）
 - mock：`/health`、`/chat`、`/chat/stream`、`/demo`、`/prompt/compare`、`/prompts`、`/runs/*` 全部 OK
 - ollama：可达时 `/chat`、`/chat/stream`、`/prompt/compare` OK；不可达时 `/chat`=502(detail 结构化)，`/chat/stream`=200 + `event:error`
 
-## 下一步（Day17）
-- RAG Chat 集成：/chat 支持 use_kb + kb_top_k，注入 topK chunks 作为 context，返回 citations（doc_id/chunk_id/source/title）
-- 最小评测脚本：20 条 QA，输出准确率/引用命中率/延迟（先粗糙闭环）
+## 下一步（Day18）
+- Demo 增强：/demo 增加 RAG 开关 + top_k 输入框 + 引用展示（优先做）
+- 流式接入：把 RAG 接入 `/chat/stream`（meta/usage/done 中体现 rag 信息，并写 run log）
+- KB 管理：新增 `/kb/documents` 列表与删除（为评测/运维铺路）

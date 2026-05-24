@@ -39,3 +39,22 @@ class Chunk(BaseModel):
     start: int
     end: int
     idx: int
+
+# 列表单项
+class DocumentMeta(BaseModel):
+    doc_id: str
+    title: str | None = None
+    source: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+    deleted: bool = False
+
+class DocumentsListResponse(BaseModel):
+    items: list[DocumentMeta]
+    total: int
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+class DeleteDocumentResponse(BaseModel):
+    doc_id: str
+    deleted: bool
+    metadata: Dict[str, Any] = Field(default_factory=dict)

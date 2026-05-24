@@ -90,3 +90,10 @@ def delete(collection: Collection, doc_id: Optional[str] = None, chunk_ids: Opti
     if doc_id:
         collection.delete(where={"doc_id": doc_id})
         return
+
+def delete_doc(collection: Collection, doc_id: Optional[str] = None) -> int:
+    if doc_id:
+        count = len(collection.get(where={"doc_id": doc_id})["ids"])
+        collection.delete(where={"doc_id": doc_id})
+        return count
+    return 0

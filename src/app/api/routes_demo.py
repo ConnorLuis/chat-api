@@ -3,7 +3,7 @@ from fastapi.responses import HTMLResponse
 
 router = APIRouter()
 
-DEMO_HTML = """
+DEMO_HTML = r"""
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -12,47 +12,35 @@ DEMO_HTML = """
     <title>LLM Chat Demo</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; font-family: Arial, sans-serif; }
-        body {
-            max-width: 1000px; margin: 20px auto; padding: 0 20px; background-color: #f5f5f5;
-        }
-        .container {
-            background: white; padding: 30px; border-radius: 8px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-        }
+        body { max-width: 1000px; margin: 20px auto; padding: 0 20px; background-color: #f5f5f5; }
+        .container { background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
         .form-group { margin-bottom: 18px; }
         label { display: block; margin-bottom: 8px; font-weight: bold; color: #333; }
-        select, input[type="text"] {
+        select, input[type="text"], input[type="number"] {
             width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 16px;
         }
         .row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
         .hint { color: #666; font-size: 13px; margin-top: 6px; }
         .btn-group { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; }
-        button {
-            padding: 10px 20px; border: none; border-radius: 4px; font-size: 16px; cursor: pointer;
-        }
+        button { padding: 10px 20px; border: none; border-radius: 4px; font-size: 16px; cursor: pointer; }
         #startBtn { background-color: #28a745; color: white; }
         #startBtn:disabled { background-color: #6c757d; cursor: not-allowed; }
         #stopBtn { background-color: #dc3545; color: white; display: none; }
         #copyTraceIdBtn, #copyCurlBtn, #clearBtn { background-color: #007bff; color: white; }
 
-        .result-section {
-            margin-top: 20px; padding: 15px; border: 1px solid #ddd; border-radius: 4px; display: none;
-        }
+        .result-section { margin-top: 20px; padding: 15px; border: 1px solid #ddd; border-radius: 4px; display: none; }
         .section-title { font-weight: bold; margin-bottom: 8px; color: #444; }
         #metaArea { background-color: #f8f9fa; padding: 10px; margin-bottom: 10px; border-radius: 4px; }
         #outputArea {
             min-height: 100px; padding: 10px; border: 1px solid #eee; margin-bottom: 10px; white-space: pre-wrap;
         }
         #usageArea { background-color: #f8f9fa; padding: 10px; margin-bottom: 10px; border-radius: 4px; }
-        #errorArea {
-            color: #dc3545; padding: 10px; background-color: #f8d7da; border-radius: 4px; display: none;
-        }
+        #citationsArea { background-color: #f8f9fa; padding: 10px; margin-bottom: 10px; border-radius: 4px; display: none; }
+        #errorArea { color: #dc3545; padding: 10px; background-color: #f8d7da; border-radius: 4px; display: none; }
 
         /* Compare 专用样式 */
         .compare-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-        .compare-card {
-            border: 1px solid #eee; border-radius: 6px; padding: 10px; background: #fff;
-        }
+        .compare-card { border: 1px solid #eee; border-radius: 6px; padding: 10px; background: #fff; }
         .compare-card h3 { font-size: 14px; margin-bottom: 6px; color: #333; }
         .compare-meta { font-size: 13px; color: #555; margin-bottom: 6px; }
         .compare-answer { white-space: pre-wrap; border: 1px solid #f0f0f0; padding: 8px; border-radius: 4px; min-height: 80px; }
@@ -62,19 +50,24 @@ DEMO_HTML = """
             box-shadow: 0 2px 10px rgba(0,0,0,0.2); z-index: 9999; display: none;
         }
         .hidden { display: none !important; }
+
+        /* RAG controls */
+        .checkbox-row { display: flex; align-items: center; gap: 8px; height: 44px; padding: 0 10px; border: 1px solid #ddd; border-radius: 4px; background: #fff; }
+        .checkbox-row input { width: auto; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>LLM Chat Demo（Stream / Compare）</h1>
+        <h1>LLM Chat Demo（Stream / Chat / Compare）</h1>
 
         <div class="form-group">
             <label for="modeSelect">模式 (Mode)</label>
             <select id="modeSelect">
-                <option value="stream">Stream Chat（SSE）</option>
-                <option value="compare">Prompt Compare（A/B）</option>
+                <option value="stream">Stream Chat（SSE, /chat/stream）</option>
+                <option value="chat">Sync Chat（/chat, 支持 citations 展示）</option>
+                <option value="compare">Prompt Compare（A/B, /prompt/compare）</option>
             </select>
-            <div class="hint">Stream：调用 /chat/stream；Compare：调用 /prompt/compare（同步对比）。</div>
+            <div class="hint">Stream：调用 /chat/stream；Chat：调用 /chat（同步，便于展示 citations）；Compare：调用 /prompt/compare。</div>
         </div>
 
         <div class="form-group">
@@ -90,18 +83,35 @@ DEMO_HTML = """
             <input type="text" id="promptInput" placeholder="请输入你想提问的内容，比如：hi" value="hi">
         </div>
 
-        <!-- Stream 模式：单套 prompt -->
+        <!-- RAG controls -->
+        <div class="form-group row-2">
+            <div>
+                <label>RAG（使用知识库）</label>
+                <div class="checkbox-row">
+                    <input type="checkbox" id="useKbCheck">
+                    <span>Use KB (RAG)</span>
+                </div>
+                <div class="hint">开启后会把 use_kb/kb_top_k 传给后端。同步 /chat 会展示 citations；流式 citations 在 usage 事件中展示。</div>
+            </div>
+            <div>
+                <label for="kbTopKInput">KB top_k</label>
+                <input type="number" id="kbTopKInput" value="3" min="1" max="20">
+                <div class="hint">建议 3~8。过大可能导致 prompt 过长。</div>
+            </div>
+        </div>
+
+        <!-- Stream/Chat 模式：单套 prompt -->
         <div id="streamPromptBox">
             <div class="form-group row-2">
                 <div>
-                    <label for="promptIdSelect">Prompt ID（Stream）</label>
+                    <label for="promptIdSelect">Prompt ID</label>
                     <select id="promptIdSelect">
                         <option value="chat">chat</option>
                         <option value="qa_strict">qa_strict</option>
                     </select>
                 </div>
                 <div>
-                    <label for="promptVersionSelect">Prompt Version（Stream）</label>
+                    <label for="promptVersionSelect">Prompt Version</label>
                     <select id="promptVersionSelect">
                         <option value="v1">v1</option>
                     </select>
@@ -145,9 +155,9 @@ DEMO_HTML = """
         </div>
 
         <div class="btn-group">
-            <button id="startBtn">开始聊天 (Start)</button>
-            <button id="stopBtn">停止聊天 (Stop)</button>
-            <button id="copyTraceIdBtn">复制 Trace ID</button>
+            <button id="startBtn">开始 (Start)</button>
+            <button id="stopBtn">停止 (Stop)</button>
+            <button id="copyTraceIdBtn">复制 Trace/Group ID</button>
             <button id="copyCurlBtn">复制 Curl 命令</button>
             <button id="clearBtn">清空输出</button>
         </div>
@@ -162,6 +172,9 @@ DEMO_HTML = """
             <div class="section-title">使用统计 (Usage / Metrics)</div>
             <div id="usageArea"></div>
 
+            <div class="section-title">引用 (Citations)</div>
+            <div id="citationsArea"></div>
+
             <div class="section-title">错误信息 (Error)</div>
             <div id="errorArea"></div>
         </div>
@@ -174,6 +187,9 @@ DEMO_HTML = """
         const modeSelect = document.getElementById('modeSelect');
         const providerSelect = document.getElementById('providerSelect');
         const promptInput = document.getElementById('promptInput');
+
+        const useKbCheck = document.getElementById('useKbCheck');
+        const kbTopKInput = document.getElementById('kbTopKInput');
 
         const streamPromptBox = document.getElementById('streamPromptBox');
         const promptIdSelect = document.getElementById('promptIdSelect');
@@ -195,6 +211,7 @@ DEMO_HTML = """
         const metaArea = document.getElementById('metaArea');
         const outputArea = document.getElementById('outputArea');
         const usageArea = document.getElementById('usageArea');
+        const citationsArea = document.getElementById('citationsArea');
         const errorArea = document.getElementById('errorArea');
         const toast = document.getElementById('toast');
 
@@ -204,8 +221,8 @@ DEMO_HTML = """
 
         // 这两个用于“复制”
         let latestTraceOrGroupId = '';
-        let lastAction = 'stream'; // 'stream' | 'compare'
         let lastStreamPayload = null;
+        let lastChatPayload = null;
         let lastComparePayload = null;
 
         function showToast(message, duration = 2000) {
@@ -220,30 +237,41 @@ DEMO_HTML = """
             metaArea.innerHTML = '';
             outputArea.innerHTML = '';
             usageArea.innerHTML = '';
+            citationsArea.style.display = 'none';
+            citationsArea.innerHTML = '';
             resultSection.style.display = 'block';
         }
 
         function setRunning(isRunning) {
             running = isRunning;
             startBtn.disabled = isRunning;
-            // stopBtn 是否显示由 mode 决定
         }
 
         function setModeUI() {
             const mode = modeSelect.value;
+
+            if (mode === 'compare') {
+                comparePromptBox.classList.remove('hidden');
+                streamPromptBox.classList.add('hidden');
+                stopBtn.style.display = 'none';
+                startBtn.style.display = 'inline-block';
+                startBtn.textContent = '开始对比 (Compare)';
+                copyTraceIdBtn.textContent = '复制 Group ID';
+                return;
+            }
+
+            // stream / chat 都使用单套 prompt
+            comparePromptBox.classList.add('hidden');
+            streamPromptBox.classList.remove('hidden');
+
             if (mode === 'stream') {
-                streamPromptBox.classList.remove('hidden');
-                comparePromptBox.classList.add('hidden');
-                startBtn.textContent = '开始聊天 (Start)';
+                startBtn.textContent = '开始聊天 (Stream)';
                 copyTraceIdBtn.textContent = '复制 Trace ID';
                 stopBtn.style.display = running ? 'inline-block' : 'none';
                 startBtn.style.display = running ? 'none' : 'inline-block';
             } else {
-                streamPromptBox.classList.add('hidden');
-                comparePromptBox.classList.remove('hidden');
-                startBtn.textContent = '开始对比 (Compare)';
-                copyTraceIdBtn.textContent = '复制 Group ID';
-                // compare 是同步请求，不需要 stop
+                startBtn.textContent = '发送 (Chat)';
+                copyTraceIdBtn.textContent = '复制 Trace ID';
                 stopBtn.style.display = 'none';
                 startBtn.style.display = 'inline-block';
             }
@@ -251,36 +279,58 @@ DEMO_HTML = """
 
         // ===== SSE utils =====
         function parseSSEBlocks(chunkStr) {
-            const blocks = chunkStr.split('\\n\\n');
-            const events = [];
-            for (const block of blocks) {
-                if (!block.trim()) continue;
-                const lines = block.split('\\n');
-                let eventType = null;
-                let dataLines = [];
-                for (const line of lines) {
-                    const trimmedLine = line.trim();
-                    if (trimmedLine.startsWith('event: ')) {
-                        eventType = trimmedLine.replace('event: ', '');
-                    } else if (trimmedLine.startsWith('data: ')) {
-                        dataLines.push(trimmedLine.replace('data: ', ''));
-                    }
-                }
-                if (eventType && dataLines.length > 0) {
-                    const dataStr = dataLines.join('\\n');
-                    events.push({ type: eventType, data: dataStr });
-                }
+          // 1) 统一换行（兼容 \r\n）
+          chunkStr = chunkStr.replace(/\r\n/g, "\n");
+        
+          const blocks = chunkStr.split("\n\n");
+          const events = [];
+        
+          for (const block of blocks) {
+            if (!block.trim()) continue;
+        
+            const lines = block.split("\n");
+            let eventType = null;
+            const dataLines = [];
+        
+            for (const line of lines) {
+              const t = line.trim();
+        
+              // event: meta  或  event:meta 都兼容
+              if (t.startsWith("event:")) {
+                eventType = t.slice("event:".length).trim();
+                continue;
+              }
+        
+              // data: xxx 或 data:xxx 都兼容；允许空串
+              if (t.startsWith("data:")) {
+                const v = t.slice("data:".length);
+                dataLines.push(v.startsWith(" ") ? v.slice(1) : v);
+              }
             }
-            return events;
+        
+            if (eventType !== null && dataLines.length > 0) {
+              events.push({ type: eventType, data: dataLines.join("\n") });
+            }
+          }
+        
+          return events;
         }
 
+        // ✅ 修复：meta 使用后端 meta.rag 展示 hits/context_chars
         function renderStreamMeta(meta) {
             latestTraceOrGroupId = meta.trace_id || '未知';
+            const rag = meta.rag || null;
+
+            const ragLine = rag
+              ? `RAG: ${rag.enabled ? 'on' : 'off'} | top_k=${rag.top_k} | hits=${rag.hits} | context_chars=${rag.context_chars}`
+              : `RAG: ${useKbCheck.checked ? 'on' : 'off'} | top_k=${kbTopKInput.value || '3'}`;
+
             metaArea.innerHTML = `
                 <div>Trace ID: ${latestTraceOrGroupId}</div>
                 <div>Provider: ${meta.provider || '未知'}</div>
                 <div>Model: ${meta.model || '未知'}</div>
                 <div>Prompt: ${(meta.prompt_id || 'none')}@${(meta.prompt_version || 'none')}</div>
+                <div>${ragLine}</div>
             `;
         }
 
@@ -290,19 +340,45 @@ DEMO_HTML = """
             outputArea.scrollTop = outputArea.scrollHeight;
         }
 
+        // ✅ 修复：context_chars 来自 usage.rag.context_chars
         function renderStreamUsage(usage) {
+            const rag = usage.rag || null;
+            const extra = [];
+            if (rag && rag.context_chars !== undefined) extra.push(`<div>context_chars: ${rag.context_chars}</div>`);
+            if (rag && rag.hits !== undefined) extra.push(`<div>rag_hits: ${rag.hits}</div>`);
+            if (rag && Array.isArray(rag.citations)) extra.push(`<div>citations_count: ${rag.citations.length}</div>`);
+
             usageArea.innerHTML = `
                 <div>耗时: ${usage.latency_ms || 0}ms</div>
                 <div>Token事件数: ${usage.token_events || 0}</div>
+                ${extra.join('')}
             `;
+        }
+
+        function renderCitations(citations) {
+            if (!citations || citations.length === 0) {
+                citationsArea.style.display = 'none';
+                citationsArea.innerHTML = '';
+                return;
+            }
+            citationsArea.style.display = 'block';
+            const items = citations.map((c, idx) => {
+                const title = (c.title === null || c.title === undefined) ? '' : ` | title=${c.title}`;
+                return `<div>[${idx+1}] doc_id=${c.doc_id} | chunk_id=${c.chunk_id} | source=${c.source}${title}</div>`;
+            });
+            citationsArea.innerHTML = items.join('');
         }
 
         function renderError(err) {
             errorArea.style.display = 'block';
             if (typeof err === 'object') {
+                // 如果 error 事件里带 rag 摘要，也展示出来（可选）
+                const rag = err.rag || null;
+                const ragInfo = rag ? `<div>RAG: ${rag.enabled ? 'on' : 'off'} | top_k=${rag.top_k} | hits=${rag.hits} | context_chars=${rag.context_chars} | citations_count=${rag.citations_count || 0}</div>` : '';
                 errorArea.innerHTML = `
                     <div>Trace/Group: ${err.trace_id || err.compare_group_id || '未知'}</div>
                     <div>Provider: ${err.provider || '未知'}</div>
+                    ${ragInfo}
                     <div>错误信息: ${err.error || '未知'}</div>
                 `;
             } else {
@@ -315,9 +391,27 @@ DEMO_HTML = """
             const { type, data } = event;
             try {
                 switch (type) {
-                    case 'meta': renderStreamMeta(JSON.parse(data)); break;
+                    case 'meta': {
+                        const meta = JSON.parse(data);
+                        renderStreamMeta(meta);
+                        break;
+                    }
                     case 'token': appendToken(data); break;
-                    case 'usage': renderStreamUsage(JSON.parse(data)); break;
+                    case 'usage': {
+                        const usage = JSON.parse(data);
+                        renderStreamUsage(usage);
+
+                        if (usage.rag && Array.isArray(usage.rag.citations)) {
+                            renderCitations(usage.rag.citations);
+                        } else {
+                            renderCitations([]);
+                        }
+
+                        if (usage.rag && usage.rag.error) {
+                            renderError({ error: usage.rag.error, trace_id: usage.trace_id, provider: usage.provider });
+                        }
+                        break;
+                    }
                     case 'error': renderError(JSON.parse(data)); break;
                     case 'done':
                         appendToken('\\n\\n【流式响应结束】');
@@ -330,7 +424,9 @@ DEMO_HTML = """
         }
 
         // ===== Payload builders =====
-        function buildStreamPayload() {
+        function buildBasePayload() {
+            const useKb = !!useKbCheck.checked;
+            const topK = parseInt(kbTopKInput.value || '3', 10);
             return {
                 provider: providerSelect.value,
                 messages: [{ role: 'user', content: promptInput.value.trim() }],
@@ -339,9 +435,14 @@ DEMO_HTML = """
                 top_p: 0.9,
                 prompt_id: promptIdSelect.value,
                 prompt_version: promptVersionSelect.value,
-                prompt_vars: {}
+                prompt_vars: {},
+                use_kb: useKb,
+                kb_top_k: useKb ? topK : null
             };
         }
+
+        function buildStreamPayload() { return buildBasePayload(); }
+        function buildChatPayload() { return buildBasePayload(); }
 
         function buildComparePayload() {
             return {
@@ -350,23 +451,70 @@ DEMO_HTML = """
                 max_tokens: 128,
                 temperature: 0.7,
                 top_p: 0.9,
-                prompt_a: {
-                    prompt_id: promptAIdSelect.value,
-                    prompt_version: promptAVersionSelect.value,
-                    prompt_vars: {}
-                },
-                prompt_b: {
-                    prompt_id: promptBIdSelect.value,
-                    prompt_version: promptBVersionSelect.value,
-                    prompt_vars: {}
-                }
+                prompt_a: { prompt_id: promptAIdSelect.value, prompt_version: promptAVersionSelect.value, prompt_vars: {} },
+                prompt_b: { prompt_id: promptBIdSelect.value, prompt_version: promptBVersionSelect.value, prompt_vars: {} }
             };
         }
 
         // ===== Actions =====
+        async function startChat() {
+            if (running) { showToast('正在运行中，请稍后再试'); return; }
+            resetUI();
+            setRunning(true);
+            setModeUI();
+
+            const payload = buildChatPayload();
+            lastChatPayload = payload;
+
+            try {
+                const resp = await fetch('/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                if (!resp.ok) {
+                    const text = await resp.text();
+                    throw new Error(`HTTP错误：${resp.status} ${resp.statusText} ${text}`);
+                }
+
+                const data = await resp.json();
+                latestTraceOrGroupId = data.trace_id || '未知';
+
+                const md = data.metadata || {};
+                const rag = md.rag || null;
+
+                metaArea.innerHTML = `
+                    <div>Trace ID: ${latestTraceOrGroupId}</div>
+                    <div>Provider: ${md.provider || payload.provider || '未知'}</div>
+                    <div>Model: ${md.model || '未知'}</div>
+                    <div>Prompt: ${(md.prompt_id || payload.prompt_id || 'none')}@${(md.prompt_version || payload.prompt_version || 'none')}</div>
+                    <div>RAG: ${payload.use_kb ? 'on' : 'off'} | top_k=${payload.kb_top_k || 'n/a'} | hits=${(rag && rag.hits !== undefined) ? rag.hits : 'n/a'}</div>
+                `;
+
+                outputArea.innerHTML = (data.answer || '').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+
+                usageArea.innerHTML = `
+                    <div>耗时: ${md.latency_ms || 0}ms</div>
+                    <div>context_chars: ${md.context_chars || 0}</div>
+                `;
+
+                if (rag && Array.isArray(rag.citations)) {
+                    renderCitations(rag.citations);
+                } else {
+                    renderCitations([]);
+                }
+
+            } catch (err) {
+                renderError(`Chat 失败：${err.message || err}`);
+            } finally {
+                setRunning(false);
+                setModeUI();
+            }
+        }
+
         async function startStream() {
             if (running) { showToast('正在运行中，请先停止后再操作'); return; }
-            lastAction = 'stream';
             resetUI();
             setRunning(true);
             setModeUI();
@@ -398,9 +546,19 @@ DEMO_HTML = """
                     if (done) break;
 
                     buffer += decoder.decode(value, { stream: true });
-                    const events = parseSSEBlocks(buffer);
+                    buffer = buffer.replace(/\r\n/g, "\n");
+                    
+                    // 只处理完整事件块：找到最后一个 \n\n
+                    const lastSep = buffer.lastIndexOf("\n\n");
+                    if (lastSep === -1) {
+                      continue; // 还不够一个完整块
+                    }
+                    
+                    const ready = buffer.slice(0, lastSep + 2);  // +2 保留分隔符
+                    buffer = buffer.slice(lastSep + 2);          // 剩余半包留到下次
+                    
+                    const events = parseSSEBlocks(ready);
                     events.forEach(handleSSEEvent);
-                    buffer = buffer.split('\\n\\n').pop() || '';
                 }
 
             } catch (error) {
@@ -419,7 +577,6 @@ DEMO_HTML = """
 
         async function startCompare() {
             if (running) { showToast('正在运行中，请稍后再试'); return; }
-            lastAction = 'compare';
             resetUI();
             setRunning(true);
             setModeUI();
@@ -441,7 +598,6 @@ DEMO_HTML = """
 
                 const data = await resp.json();
 
-                // meta：显示 group + A/B trace
                 latestTraceOrGroupId = data.compare_group_id || '未知';
                 const a = data.a || {};
                 const b = data.b || {};
@@ -455,7 +611,6 @@ DEMO_HTML = """
                     <div>Provider: ${(ma.provider || mb.provider || '未知')} | Model: ${(ma.model || mb.model || '未知')}</div>
                 `;
 
-                // output：左右并列
                 outputArea.innerHTML = `
                     <div class="compare-grid">
                         <div class="compare-card">
@@ -471,7 +626,6 @@ DEMO_HTML = """
                     </div>
                 `;
 
-                // metrics
                 const m = data.metrics || {};
                 usageArea.innerHTML = `
                     <div><b>latency_ms</b>: A=${m.latency_ms_a || 0} | B=${m.latency_ms_b || 0} | diff=${m.diff_latency_ms || 0}</div>
@@ -508,6 +662,8 @@ DEMO_HTML = """
             metaArea.innerHTML = '';
             outputArea.innerHTML = '';
             usageArea.innerHTML = '';
+            citationsArea.style.display = 'none';
+            citationsArea.innerHTML = '';
             resultSection.style.display = 'none';
             latestTraceOrGroupId = '';
             showToast(`已清空所有输出内容 ${stopTip}`, 2000);
@@ -527,15 +683,21 @@ DEMO_HTML = """
         }
 
         function handleCopyCurl() {
+            const mode = modeSelect.value;
             let curl = '';
-            if (modeSelect.value === 'compare') {
+
+            if (mode === 'compare') {
                 const payload = lastComparePayload || buildComparePayload();
                 const payloadStr = JSON.stringify(payload).replace(/'/g, "'\\''");
-                curl = `curl -X POST http://localhost:8000/prompt/compare \\\\n  -H "Content-Type: application/json" \\\\n  -d '${payloadStr}'`;
+                curl = `curl -X POST http://localhost:8000/prompt/compare \n  -H "Content-Type: application/json" \n  -d '${payloadStr}'`;
+            } else if (mode === 'chat') {
+                const payload = lastChatPayload || buildChatPayload();
+                const payloadStr = JSON.stringify(payload).replace(/'/g, "'\\''");
+                curl = `curl -X POST http://localhost:8000/chat \n  -H "Content-Type: application/json" \n  -d '${payloadStr}'`;
             } else {
                 const payload = lastStreamPayload || buildStreamPayload();
                 const payloadStr = JSON.stringify(payload).replace(/'/g, "'\\''");
-                curl = `curl -N -X POST http://localhost:8000/chat/stream \\\\n  -H "Content-Type: application/json" \\\\n  -d '${payloadStr}'`;
+                curl = `curl -N -X POST http://localhost:8000/chat/stream \n  -H "Content-Type: application/json" \n  -d '${payloadStr}'`;
             }
 
             navigator.clipboard.writeText(curl).then(() => {
@@ -547,19 +709,23 @@ DEMO_HTML = """
         }
 
         async function handleStartClick() {
-            if (modeSelect.value === 'compare') {
-                await startCompare();
-            } else {
-                await startStream();
-            }
+            const mode = modeSelect.value;
+            if (mode === 'compare') await startCompare();
+            else if (mode === 'chat') await startChat();
+            else await startStream();
         }
 
         // init
         modeSelect.addEventListener('change', () => {
             setModeUI();
-            // 切换模式时把结果区隐藏，避免误解
             resultSection.style.display = 'none';
             latestTraceOrGroupId = '';
+        });
+
+        useKbCheck.addEventListener('change', () => {
+            if (!useKbCheck.checked) {
+                kbTopKInput.value = '3';
+            }
         });
 
         startBtn.addEventListener('click', handleStartClick);
@@ -568,7 +734,6 @@ DEMO_HTML = """
         copyCurlBtn.addEventListener('click', handleCopyCurl);
         clearBtn.addEventListener('click', handleClearClick);
 
-        // 默认初始化
         setModeUI();
     </script>
 </body>
