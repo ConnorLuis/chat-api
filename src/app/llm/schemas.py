@@ -69,10 +69,12 @@ class Citation(BaseModel):
     title: str | None = None
 
 class RagMetadata(BaseModel):
-    enabled: bool
-    top_k: int
-    citations: List[Citation]
+    enabled: bool = False
+    top_k: int = 0
+    citations: List[Citation] = Field(default_factory=list)
     hits: Optional[int] = None
+    candidate_k: int = 0
+    error: str | None = None
 
 # 封装响应的元信息（引擎类型、模型名、响应耗时），作为 ChatResponse 的可选字段
 class ChatMetadata(BaseModel):
@@ -82,7 +84,7 @@ class ChatMetadata(BaseModel):
     latency_ms: int
     prompt_id: str | None = None
     prompt_version: str | None = None
-    rag: Optional[RagMetadata] = None
+    rag: RagMetadata = Field(default_factory=RagMetadata)
     context_chars: int | None = None
     rag_error: str | None = None
 

@@ -8,6 +8,7 @@ from src.app.kb import store, chunking
 from src.app.kb.chroma_store import get_collection, delete_doc, query, upsert_chunks
 from src.app.kb.embeddings import get_embedding_engine
 from src.app.core.settings import settings
+from src.app.kb.index_text import extract_index_text
 from src.app.kb.schemas import DocumentResponse, DocumentRequest, SearchResponse, Hit, DocumentsListResponse, \
     DeleteDocumentResponse
 from src.app.kb.store import delete_doc_file, mark_deleted
@@ -47,7 +48,12 @@ async def create_document(request: DocumentRequest, http_request: Request):
         source=request.source
     )
     # 切分文本成块
-    chunks_data = chunking.split_text(request.text, settings.KB_CHUNK_SIZE, settings.KB_CHUNK_OVERLAP)
+    raw_text = request.text
+    index_text = extract_index_text(raw_text=raw_text)
+    chunks_data = chunking.split_text(index_text, settings.KB_CHUNK_SIZE, settings.KB_CHUNK_OVERLAP)
+    if not chunks_data:
+        latency_ms = int((time.perf_counter() - start_time) * 1000)
+        return DocumentResponse(doc_id=doc_id,chunks = 0, metadata = {"trace_id": trace_id, "latency_ms": latency_ms})
     chunks_texts = [c.text for c in chunks_data]
     # 获取向量数据库的collection
     collection = get_collection(settings.KB_CHROMA_DIR, settings.KB_COLLECTION, space="cosine")

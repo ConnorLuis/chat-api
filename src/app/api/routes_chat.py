@@ -7,7 +7,7 @@ from src.app.core.errors import build_error
 from src.app.core.logging import get_trace_id  # 链路追踪ID
 from src.app.kb import chroma_store
 from src.app.kb.embeddings import get_embedding_engine
-from src.app.kb.rag_context import build_rag_context
+from src.app.kb.rag_context import build_rag_context, rerank_hits
 from src.app.kb.schemas import Hit
 from src.app.llm.prompt_registry import PromptRegistry, ensure_system_prompt
 from src.app.llm.run_logger import append_jsonl
@@ -89,23 +89,37 @@ def chat(req: Request, body: Annotated[ChatRequest, Body(openapi_examples=CHAT_O
     if prompt_id:
         template = prompt_registry.get(prompt_id, prompt_version)
         system_text = prompt_registry.render(template, prompt_vars)
-    rag_meta = None
     context = None
     hits = []
-    top_k = body.kb_top_k or settings.KB_TOP_K
+    top_k = int(body.kb_top_k or settings.KB_TOP_K)
     rag_error = None
+    candidate_k=0
+    rag_meta = RagMetadata(
+        enabled=bool(body.use_kb),
+        top_k=top_k if body.use_kb else 0,
+        citations=[],
+        hits=0,
+        candidate_k=0,
+        error=None,
+    )
     try:
         if body.use_kb:
             collection = chroma_store.get_collection(settings.KB_CHROMA_DIR, settings.KB_COLLECTION, space="cosine")
             embed_engine = get_embedding_engine(settings)
             query = _last_user_text(messages)
             if not query:
-                # KB 开启但没有可用 query：当作无命中，继续走普通 chat
-                rag_meta = RagMetadata(enabled=True, top_k=top_k, citations=[], hits=0)
+                # KB 开启但没有可用 query：当作无命中（但 rag 仍然是 enabled=true）
+                rag_meta.enabled = True
+                rag_meta.top_k = top_k
+                rag_meta.candidate_k = 0
+                rag_meta.hits = 0
+                rag_meta.citations = []
+                rag_meta.error = None
                 context = None
             else:
+                candidate_k = max(top_k, settings.KB_CANDIDATE_K)
                 query_vector = embed_engine.embed_query(query)
-                hits_raw = chroma_store.query(collection, query_vector, top_k)
+                hits_raw = chroma_store.query(collection, query_vector, top_k=candidate_k)
                 for h in hits_raw:
                     doc_id = h["metadata"]["doc_id"]
                     chunk_id = h["metadata"].get("chunk_id", h["id"])
@@ -115,18 +129,36 @@ def chat(req: Request, body: Annotated[ChatRequest, Body(openapi_examples=CHAT_O
                     title = h["metadata"].get("title")
                     hit = Hit(doc_id=doc_id, chunk_id=chunk_id, score=score, text=text, source=source, title=title)
                     hits.append(hit)
-                context_text, citations = build_rag_context(hits=hits)
+                hits = rerank_hits(query=query, hits=hits)
+                hits = hits[:top_k]
+                context_text, citations = build_rag_context(hits=hits, max_chars=settings.KB_MAX_CONTEXT_CHARS)
                 if not hits:
                     context = None
-                    rag_meta = RagMetadata(enabled=True, top_k=top_k, citations=[], hits=0)
+                    rag_meta.enabled = True
+                    rag_meta.top_k = top_k
+                    rag_meta.candidate_k = candidate_k
+                    rag_meta.hits = 0
+                    rag_meta.citations = []
+                    rag_meta.error = None
                 else:
                     context = f"你是一个严谨助手 仅基于以下资料回答，并在回答末尾列出引用编号 \n\n<CONTEXT>\n{context_text}"
-                    rag_meta = RagMetadata(enabled=True, top_k=top_k, citations=citations, hits=len(hits))
+                    rag_meta.enabled = True
+                    rag_meta.top_k = top_k
+                    rag_meta.candidate_k = candidate_k
+                    rag_meta.hits = len(hits)
+                    rag_meta.citations = citations
+                    rag_meta.error = None
     except Exception as e:
         rag_error = str(e)
         hits = []
-        rag_meta = RagMetadata(enabled=True, top_k=top_k, citations=[], hits=0)
         context = None
+
+        rag_meta.enabled = True
+        rag_meta.top_k = top_k
+        rag_meta.candidate_k = candidate_k  # 如果早期异常这里可能还是 0，没关系
+        rag_meta.hits = 0
+        rag_meta.citations = []
+        rag_meta.error = rag_error
     context_chars = len(context) if context else 0
     parts = []
     if system_text:
@@ -275,15 +307,25 @@ async def chat_stream(req: Request, body: Annotated[ChatRequest, Body(openapi_ex
             system_text = prompt_registry.render(template, prompt_vars)
 
         rag_enabled = bool(body.use_kb)
-        top_k = body.kb_top_k or settings.KB_TOP_K
+        top_k = int(body.kb_top_k or settings.KB_TOP_K)
+
         hits_list = []
         hits = 0
         citations = []
-        rag_meta = None
         context = None
         context_chars = 0
         rag_error = None
+        candidate_k = 0
 
+        # ✅ 统一形状：永远有 rag（use_kb=false 时 enabled=false + top_k=0）
+        rag_dict = {
+            "enabled": rag_enabled,
+            "top_k": top_k if rag_enabled else 0,
+            "hits": 0,
+            "context_chars": 0,
+            "candidate_k": 0,
+            "error": None,
+        }
         try:
             if rag_enabled:
                 collection = chroma_store.get_collection(settings.KB_CHROMA_DIR, settings.KB_COLLECTION, space="cosine")
@@ -291,10 +333,25 @@ async def chat_stream(req: Request, body: Annotated[ChatRequest, Body(openapi_ex
                 query = _last_user_text(messages)
                 if not query:
                     context = None
-                    rag_meta = RagMetadata(enabled=True, top_k=top_k, citations=[], hits=0)
+                    hits = 0
+                    citations = []
+                    rag_dict.update({
+                        "enabled": True,
+                        "top_k": top_k,
+                        "hits": 0,
+                        "candidate_k": 0,
+                        "error": None,
+                    })
                 else:
+                    candidate_k = max(top_k, settings.KB_CANDIDATE_K)
+                    rag_dict.update({
+                        "enabled": True,
+                        "top_k": top_k,
+                        "candidate_k": candidate_k,
+                        "error": None,
+                    })
                     query_vector = embed_engine.embed_query(query)
-                    hits_raw = chroma_store.query(collection, query_vector, top_k)
+                    hits_raw = chroma_store.query(collection, query_vector, top_k=candidate_k)
                     for h in hits_raw:
                         doc_id = h["metadata"]["doc_id"]
                         chunk_id = h["metadata"].get("chunk_id", h["id"])
@@ -305,21 +362,42 @@ async def chat_stream(req: Request, body: Annotated[ChatRequest, Body(openapi_ex
                         hit = Hit(doc_id=doc_id, chunk_id=chunk_id, score=score, text=text, source=source, title=title)
                         hits_list.append(hit)
                         hits = len(hits_list)
-                    context_text, citations = build_rag_context(hits=hits_list)
+                    hits_list = rerank_hits(query, hits=hits_list)
+                    hits_list = hits_list[:top_k]
+                    hits = len(hits_list)
+                    context_text, citations = build_rag_context(hits=hits_list, max_chars=settings.KB_MAX_CONTEXT_CHARS)
                 if not hits:
                     context = None
-                    rag_meta = RagMetadata(enabled=True, top_k=top_k, citations=[], hits=0)
+                    rag_dict.update({
+                        "enabled": True,
+                        "top_k": top_k,
+                        "hits": 0,
+                        "error": None,
+                    })
                 else:
                     context = f"你是一个严谨助手 仅基于以下资料回答，并在回答末尾列出引用编号 \n\n<CONTEXT>\n{context_text}"
-                    rag_meta = RagMetadata(enabled=True, top_k=top_k, citations=citations, hits=hits)
+                    rag_dict.update({
+                        "enabled": True,
+                        "top_k": top_k,
+                        "hits": hits,
+                        "error": None,
+                    })
         except Exception as e:
             rag_error = str(e)
             citations = []
             hits = 0
-            rag_meta = RagMetadata(enabled=True, top_k=top_k, citations=[], hits=0)
             context = None
 
+            rag_dict.update({
+                "enabled": True,  # 因为 user 开了 use_kb，属于 best-effort 失败
+                "top_k": top_k,
+                "candidate_k": candidate_k,  # 早期异常可能还是 0，OK
+                "hits": 0,
+                "error": rag_error,
+            })
+
         context_chars = len(context) if context else 0
+        rag_dict["context_chars"] = context_chars
         parts = []
         if system_text:
             parts.append(system_text)
@@ -336,12 +414,7 @@ async def chat_stream(req: Request, body: Annotated[ChatRequest, Body(openapi_ex
             "model": engine_model(engine),
             "prompt_id": prompt_id or "none",
             "prompt_version": prompt_version if prompt_id else "none",
-            "rag": {
-                "enabled": rag_enabled,
-                "top_k": top_k,
-                "hits": hits,
-                "context_chars": context_chars,
-            },
+            "rag": rag_dict,
         }
         yield sse_event("meta", meta)
 
@@ -370,12 +443,9 @@ async def chat_stream(req: Request, body: Annotated[ChatRequest, Body(openapi_ex
                 "prompt_id": prompt_id or "none",
                 "prompt_version": prompt_version if prompt_id else "none",
                 "rag": {
-                    "enabled": rag_enabled,
-                    "top_k": top_k,
-                    "hits": hits,
-                    "context_chars": context_chars,
+                    **rag_dict,
                     "citations": citations_payload,
-                    "error": rag_error
+                    "error": rag_error or rag_dict.get("error"),
                 },
             }
             yield sse_event("usage", usage)
@@ -406,12 +476,9 @@ async def chat_stream(req: Request, body: Annotated[ChatRequest, Body(openapi_ex
             err["prompt_id"] = prompt_id or "none"
             err["prompt_version"] = prompt_version if prompt_id else "none"
             err["rag"] = {
-                "enabled": rag_enabled,
-                "top_k": top_k,
-                "hits": hits,
-                "context_chars": context_chars,
-                "citations_count": len(citations),
-                "error": rag_error,
+                **rag_dict,
+                "citations": citations_payload if "citations_payload" in locals() else [],
+                "error": str(e),
             }
             # 异常时返回带trace_id的错误信息
             yield sse_event("error", err)

@@ -4,6 +4,9 @@ from typing import Tuple, List, Dict, Any
 
 from src.app.llm.schemas import RunsTraceResponse
 
+"""
+读取jsonl文件，并且返回json格式后的记录，以及坏行数
+"""
 def _iter_jsonl(path: Path) -> Tuple[List[Dict[str, Any]], int]:
     """读取 JSONL：返回 records + bad_lines（坏行数）。"""
     records: List[Dict[str, Any]] = []
@@ -25,6 +28,8 @@ def _iter_jsonl(path: Path) -> Tuple[List[Dict[str, Any]], int]:
             except:
                 bad_lines += 1
     return records, bad_lines
+
+# 根据trace-id在jsonl文件中找寻对应记录
 def find_runs_by_trace(path: Path, trace_id: str, mode: str | None = None) -> RunsTraceResponse:
     all_records, bad_lines = _iter_jsonl(path)
     matched: List[Dict[str, Any]] = []
@@ -38,7 +43,7 @@ def find_runs_by_trace(path: Path, trace_id: str, mode: str | None = None) -> Ru
                 matched.append(r)
     return RunsTraceResponse(trace_id=trace_id, records=matched, bad_lines=bad_lines)
 
-
+# 做prompt提示词AB模板比较时会有compare_group_id记录，比较的AB模板返回内容的优劣，方便再次回溯对比
 def find_runs_by_compare_group(path: Path, compare_group_id: str) -> Dict[str, Any]:
     all_records,bad_lines = _iter_jsonl(path)
 
@@ -61,6 +66,7 @@ def find_runs_by_compare_group(path: Path, compare_group_id: str) -> Dict[str, A
     }
     return resp
 
+# 标准化比较的AB模板
 def normalize_compare_pair(records: list[dict]) -> dict:
     priority = {"A": 0, "B": 1}
     records_sorted = sorted(records, key=lambda x: priority.get(x.get("variant"), 99))

@@ -19,3 +19,25 @@ __pycache__/
 .venv/
 /runs/
 .idea/
+
+# Runtime KB artifacts
+kb/chroma/
+kb/docs/
+kb/docs.jsonl
+
+# Local backups
+backup_kb_reset/
+
+# Eval generated outputs
+eval/results/
+eval/kb_seed_manifest.jsonl
+eval/qa_q019.jsonl
+eval/qa_probe_5.jsonl
+
+# Shell heredoc leftovers
+PY
+for
+
+# Python cache
+__pycache__/
+*.pyc

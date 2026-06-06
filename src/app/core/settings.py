@@ -63,7 +63,15 @@ class Settings:
     # 检索返回多少条
     @property
     def KB_TOP_K(self) -> int:
-        return int(getenv("KB_TOP_K", "5"))
+        return int(getenv("KB_TOP_K", "3"))
+
+    @property
+    def KB_CANDIDATE_K(self) -> int:
+        return int(getenv("KB_CANDIDATE_K", "50"))
+
+    @property
+    def KB_MAX_CONTEXT_CHARS(self) -> int:
+        return int(getenv("KB_MAX_CONTEXT_CHARS", "2000"))
 
     # 决定用 mock 还是 SentenceTransformer
     @property
@@ -89,5 +97,6 @@ class Settings:
     @property
     def EMBEDDING_DIM(self) -> str:
         return getenv("EMBEDDING_DIM", "512")
+
 
 settings = Settings()
