@@ -7,6 +7,9 @@
 * `POST /chat/stream`：SSE 流式聊天（`provider=mock|ollama`），事件：`meta/token/usage/done/error`
 * 全局中间件：`x-trace-id` + latency 日志
 * 可插拔 LLM 引擎：mock / ollama
+* RAG：KB 入库/检索、同步/流式上下文注入、citations 溯源
+* KB 管理：文档列表、软删除 tombstone、Chroma 向量清理
+* RAG 评测：QA20 离线评测、answer/citation/effective_rag/latency 指标
 * pytest：基础回归 + SSE 契约测试 + 错误契约测试
 
 ---
@@ -48,6 +51,13 @@ curl http://localhost:8000/health
 * `OLLAMA_BASE_URL` (default: `http://127.0.0.1:11434`)
 * `OLLAMA_MODEL` (default: `qwen2.5:7b`)
 * `OLLAMA_TIMEOUT_S` (default: `60`)
+* `RUN_LOG_PATH` (default: `runs/prompt_runs.jsonl`)
+* `KB_DIR` (default: `kb`)
+* `KB_CHROMA_DIR` (default: `${KB_DIR}/chroma`)
+* `KB_TOP_K` (default: `5`)
+* `KB_CANDIDATE_K` (default: `50`)：先召回更大候选池，再 rerank 截断到 `kb_top_k`
+* `EMBEDDING_PROVIDER` (default: `mock`, options: `mock|hf`)
+* `EMBEDDING_MODEL`：HF embedding 模型名或本地路径
 
 ### WSL2 -> Windows Ollama
 
@@ -560,3 +570,123 @@ curl -s -X DELETE "http://localhost:8000/kb/documents/<doc_id>" | cat
 pytest -q
 # 30 passed
 ```
+
+---
+
+## RAG Evaluation (Day19)
+
+Day19 将 RAG 从“功能可用”推进到“可量化、可回放、可回归”的评测闭环。
+
+### What was added
+
+- `docs/kb_seed/01-11`：项目知识库种子文档。
+- `src/app/kb/index_text.py`：统一索引文本抽取，避免 `Keywords/QA Seeds/Appendix/Changelog` 污染向量库。
+- `eval/qa_rag_20.jsonl`：20 条 QA 评测集。
+- `scripts/eval_qa_rag.py`：离线评测脚本。
+- `src/app/kb/rag_context.py`：`build_rag_context()` + query-aware `rerank_hits()`。
+- `KB_CANDIDATE_K=50`：先召回候选池，再基于 query/title/text 做轻量 rerank。
+
+### KB Seed structure
+
+每篇 `docs/kb_seed/*.md` 统一结构：
+
+```md
+正文（会入库）
+---
+# Keywords（只给人看，不入库）
+# QA Seeds（只给评测/维护，不入库）
+```
+
+入库时 `extract_index_text()` 只保留正文。截断规则：
+
+- 优先遇到独立一行 `---` 截断；
+- 如果没有 `---`，遇到一级标题 `# Keywords`、`# QA Seeds`、`# Appendix`、`# Changelog` 截断。
+
+### Run evaluation
+
+```bash
+python scripts/eval_qa_rag.py \
+  --qa eval/qa_rag_20.jsonl \
+  --out eval/results/rag_eval_20.jsonl \
+  --summary eval/results/rag_eval_20_summary.json \
+  --provider ollama
+```
+
+输出：
+
+- `eval/results/rag_eval_20.jsonl`：逐题证据，包含 `qid/question/answer/trace_id/rag/citations/answer_score/citation_score/effective_rag/latency_ms`。
+- `eval/results/rag_eval_20_summary.json`：汇总指标。
+
+### Metrics
+
+- `answer_hit_rate`：关键词命中，并且回答没有“不确定/需要更多上下文”等拒答模板。
+- `citation_hit_rate`：有 citations，且 citation.source 命中 expected_sources。
+- `title_hit_rate`：诊断指标，citation.title 是否命中 expected_titles。
+- `effective_rag_rate`：`rag.enabled=true && rag.hits>0 && context_chars>0`。
+- `avg/p50/p95 latency_ms`：来自 `/chat` 返回的 metadata。
+
+### Final Day19 result
+
+最终 QA20 验收结果：
+
+```text
+total = 20
+success = 20
+failed = 0
+answer_hit_rate = 95.0%
+citation_hit_rate = 100.0%
+effective_rag_rate = 100.0%
+avg_latency_ms ≈ 1953ms
+```
+
+### Lessons from Day19
+
+Day19 中间经历了多次真实工程问题，并逐个修复：
+
+- 入库 payload 用错字段：`markdown` → `text`，通过 `/openapi.json` 定位 422。
+- shell heredoc 管道写错，固定为 `python ... | curl -d @-` 模板。
+- 手动删除 `kb/docs/*.md` 造成状态不一致，改为 API tombstone + Chroma delete。
+- `Keywords/QA Seeds` 被索引导致召回污染，用 `extract_index_text()` 固化规则。
+- md 已更新但 Chroma 仍是旧索引，清理 Chroma 后重新入库验证。
+- `candidate_k/rerank/top_k` chunk 原始向量排序靠后，用 `KB_CANDIDATE_K=50` + query-aware rerank 修复。
+- rerank 一度过拟合到 `RAG in Chat/Stream`，改为 query 触发的专题 title boost。
+- 关键词评测一度误判“不确定回答”为通过，加入 uncertain 拦截。
+- “没有找到记录所以 404”一度被 uncertainty pattern 误杀，收窄拒答模板。
+- Git 提交时区分源码与运行时产物：不提交 `kb/chroma/`、`kb/docs/`、`kb/docs.jsonl`、`eval/results/`。
+- Day19 同时补充了 RAG 评测相关回归点：KB Seed 截断规则、uncertain answer guard、citation/title 命中口径、candidate_k + query-aware rerank，避免 QA Seeds 污染、关键词假阳性和 rerank 全局偏置。
+
+---
+
+## Git hygiene
+
+以下是运行时产物，不建议提交：
+
+```gitignore
+kb/chroma/
+kb/docs/
+kb/docs.jsonl
+eval/results/
+eval/kb_seed_manifest.jsonl
+backup_kb_reset/
+```
+
+建议提交：
+
+- `src/**` 源码；
+- `docs/kb_seed/*.md` 源文档；
+- `eval/qa_rag_20.jsonl` 评测集；
+- `scripts/eval_qa_rag.py` 评测脚本；
+- README / HANDOFF / day logs。
+
+## RAG Evaluation Report & Regression Gates (Day20)
+
+Day20 将 Day19 的 RAG QA20 离线评测结果整理成 Markdown 报告，并增加回归门槛。
+
+### Generate report
+
+```bash
+python scripts/build_eval_report.py \
+  --results eval/results/rag_eval_20.jsonl \
+  --summary eval/results/rag_eval_20_summary.json \
+  --out eval/reports/rag_eval_report.md \
+  --strict
