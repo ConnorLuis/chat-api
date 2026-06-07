@@ -9,8 +9,8 @@
 * 可插拔 LLM 引擎：mock / ollama
 * RAG：KB 入库/检索、同步/流式上下文注入、citations 溯源
 * KB 管理：文档列表、软删除 tombstone、Chroma 向量清理
-* RAG 评测：QA20 离线评测、answer/citation/effective_rag/latency 指标、Markdown report + regression gates
-* pytest：基础回归 + SSE 契约测试 + 错误契约测试 + RAG 评测回归测试
+* RAG 评测：QA20 离线评测、answer/citation/effective_rag/latency 指标
+* pytest：基础回归 + SSE 契约测试 + 错误契约测试
 
 ---
 
@@ -28,7 +28,7 @@
 
 ```bash
 conda activate chatapi
-python -m pip install -U fastapi uvicorn httpx pydantic pytest
+python -m pip install -r requirements.txt
 ```
 
 ### 2) Run server
@@ -258,6 +258,60 @@ pytest -q
 ```
 
 ---
+
+
+---
+
+## CI (Day23)
+
+Day23 新增 GitHub Actions：
+
+- workflow: `.github/workflows/ci.yml`
+- trigger: push / pull_request to `master`
+- Python: 3.10
+- command: `pytest -q`
+- embedding: `EMBEDDING_PROVIDER=mock`
+
+CI 使用 `requirements.txt` 安装基础服务与测试依赖：
+
+```bash
+python -m pip install -r requirements.txt
+pytest -q
+```
+
+### CI dependency note
+
+`sentence-transformers / torch / transformers` 没有放进默认 `requirements.txt`。  
+原因是 CI 测试使用 `EMBEDDING_PROVIDER=mock`，不需要真实 HF embedding 依赖。
+
+Day23 修复了一个 CI import 问题：
+
+- 问题：`src/app/kb/embeddings.py` 顶层 import `sentence_transformers`，导致 mock embedding 的 CI 也失败。
+- 修复：将 `sentence_transformers` 改为 HF provider 内部懒加载。
+- 效果：基础 CI 保持轻量，真实 HF embedding 仍可按需启用。
+
+---
+
+## System Design (Day23)
+
+系统设计说明：
+
+- `docs/system_design.md`
+
+覆盖内容：
+
+- Overall architecture
+- `/chat` 同步请求链路
+- `/chat/stream` SSE 流式链路
+- RAG pipeline：ingest → chunk → embedding → Chroma → candidate_k → rerank → top_k → context → citations
+- PromptHub / A/B Compare
+- Run log / Replay
+- Error handling：sync 502 vs stream `event:error`
+- Evaluation and regression gates
+- Design trade-offs
+- Current boundaries and future work
+
+Day23 完成后，chat-api v1 可以视为阶段性完结：服务可运行、demo 可演示、测试可回归、CI 可验证、系统设计可讲解。
 
 ## Troubleshooting
 
@@ -627,6 +681,8 @@ python scripts/eval_qa_rag.py \
 
 ### Final Day19 result
 
+最终 QA20 验收结果：
+
 ```text
 total = 20
 success = 20
@@ -637,114 +693,21 @@ effective_rag_rate = 100.0%
 avg_latency_ms ≈ 1953ms
 ```
 
-### Regression tests
+### Lessons from Day19
 
-Day19/Day20 补充了 3 个关键回归测试：
+Day19 中间经历了多次真实工程问题，并逐个修复：
 
-- `tests/kb/test_index_text.py`：锁死 `extract_index_text` 防污染规则。
-- `tests/eval/test_eval_metrics_unit.py`：锁死 uncertain answer guard 与 citation/title 分层口径。
-- `tests/kb/test_rag_rerank.py`：锁死 query-aware rerank，防止 RAG 文档全局吸走召回。
-
----
-
-## RAG Evaluation Report & Regression Gates (Day20)
-
-Day20 将 Day19 的 RAG QA20 离线评测结果整理成 Markdown 报告，并增加回归门槛。
-
-### Generate report
-
-```bash
-python scripts/build_eval_report.py \
-  --results eval/results/rag_eval_20.jsonl \
-  --summary eval/results/rag_eval_20_summary.json \
-  --out eval/reports/rag_eval_report.md \
-  --strict
-```
-
-成功输出：
-
-```text
-Report generated: eval/reports/rag_eval_report.md
-All regression gates passed!
-```
-
-### Current QA20 result
-
-- answer_hit_rate: 95.0%
-- citation_hit_rate: 100.0%
-- effective_rag_rate: 100.0%
-- title_hit_rate: 95.0%
-- failed: 0
-- p95_latency_ms: 3857ms（低于 6000ms gate）
-
-### Regression gates
-
-- answer_hit_rate >= 0.90
-- citation_hit_rate >= 0.95
-- effective_rag_rate >= 0.95
-- title_hit_rate >= 0.85
-- failed_count == 0
-- p95_latency_ms <= 6000
-
-### Added KB Seed docs
-
-Day20 新增两篇 KB Seed 源文档：
-
-- `docs/kb_seed/12_RAG Eval Report & Regression Gates.md`
-- `docs/kb_seed/13_Retrieval Rerank & Candidate Pool.md`
-
-建议先提交源文档，不急着立刻入库；如果后续把 12/13 纳入 Chroma，需要重新跑 QA20 回归，观察新增文档是否影响召回分布。
-
----
----
-
-## RAG Evaluation Report & Regression Gates (Day20)
-
-Day20 将 Day19 的 RAG QA20 离线评测结果整理成 Markdown 报告，并增加回归门槛。
-
-### Generate report
-
-```bash
-python scripts/build_eval_report.py \
-  --results eval/results/rag_eval_20.jsonl \
-  --summary eval/results/rag_eval_20_summary.json \
-  --out eval/reports/rag_eval_report.md \
-  --strict
-```
-
-成功输出：
-
-```text
-Report generated: eval/reports/rag_eval_report.md
-All regression gates passed!
-```
-
-### Current QA20 result
-
-- answer_hit_rate: 95.0%
-- citation_hit_rate: 100.0%
-- effective_rag_rate: 100.0%
-- title_hit_rate: 95.0%
-- failed: 0
-- p95_latency_ms: 3857ms（低于 6000ms gate）
-
-### Regression gates
-
-- answer_hit_rate >= 0.90
-- citation_hit_rate >= 0.95
-- effective_rag_rate >= 0.95
-- title_hit_rate >= 0.85
-- failed_count == 0
-- p95_latency_ms <= 6000
-
-### Added KB Seed docs
-
-Day20 新增两篇 KB Seed 源文档：
-
-- `docs/kb_seed/12_RAG Eval Report & Regression Gates.md`
-- `docs/kb_seed/13_Retrieval Rerank & Candidate Pool.md`
-
-建议先提交源文档，不急着立刻入库；如果后续把 12/13 纳入 Chroma，需要重新跑 QA20 回归，观察新增文档是否影响召回分布。
+- 入库 payload 用错字段：`markdown` → `text`，通过 `/openapi.json` 定位 422。
+- shell heredoc 管道写错，固定为 `python ... | curl -d @-` 模板。
+- 手动删除 `kb/docs/*.md` 造成状态不一致，改为 API tombstone + Chroma delete。
+- `Keywords/QA Seeds` 被索引导致召回污染，用 `extract_index_text()` 固化规则。
+- md 已更新但 Chroma 仍是旧索引，清理 Chroma 后重新入库验证。
+- `candidate_k/rerank/top_k` chunk 原始向量排序靠后，用 `KB_CANDIDATE_K=50` + query-aware rerank 修复。
+- rerank 一度过拟合到 `RAG in Chat/Stream`，改为 query 触发的专题 title boost。
+- 关键词评测一度误判“不确定回答”为通过，加入 uncertain 拦截。
+- “没有找到记录所以 404”一度被 uncertainty pattern 误杀，收窄拒答模板。
+- Git 提交时区分源码与运行时产物：不提交 `kb/chroma/`、`kb/docs/`、`kb/docs.jsonl`、`eval/results/`。
+- Day19 同时补充了 RAG 评测相关回归点：KB Seed 截断规则、uncertain answer guard、citation/title 命中口径、candidate_k + query-aware rerank，避免 QA Seeds 污染、关键词假阳性和 rerank 全局偏置。
 
 ---
 
@@ -776,61 +739,6 @@ pytest -q
 # 44 passed
 ```
 
----
-
-## Demo Storyline Run-through (Day22)
-
-Day22 按 `docs/demo_storyline_day22.md` 对完整 demo 链路做了实跑验收。
-
-### Demo flow
-
-```text
-/health
-→ /prompts
-→ /chat + RAG
-→ /chat/stream + RAG
-→ /prompt/compare
-→ /runs/trace/{trace_id}
-→ /runs/compare/{compare_group_id}
-→ Error Demo
-→ build_eval_report.py --strict
-```
-
-### Verified results
-
-- `/health` 返回 `{"status":"ok"}`。
-- `/prompts` 能列出 `qa_strict:v1` 与 `chat:v1`。
-- RAG Sync Chat 能回答 `docs.jsonl 的作用是什么？`，并返回 `KB Ingest & Search` citations。
-- RAG Streaming SSE 输出 `meta → token* → usage → done`，usage 中包含 `RAG in Chat/Stream` citations。
-- Prompt A/B Compare 返回 `compare_group_id`、A/B trace_id、latency/output diff。
-- Replay 支持按 trace_id 单条回放，也支持按 compare_group_id 聚合回放 A/B。
-- Error Demo 验证：
-  - `/chat` 下游失败 → HTTP 502 + structured detail。
-  - `/chat/stream` 下游失败 → HTTP 200 + `event:error`。
-- Eval Report strict gate 通过。
-- 恢复正常 Ollama 后 `/chat` 可用。
-- `pytest -q` 全绿：44 passed。
-
-### Day22 live KB note
-
-Day22 一开始 live KB 里只剩 demo 文档，导致 `docs.jsonl` 问题回答“不确定”。  
-解决方式是重新入库 01-11 kb_seed，并保持 12/13 暂不入库，避免改变 QA20 召回分布。
-
-这也验证了 Day19 的核心修复：
-
-```text
-raw /kb/search top5 不一定最准确；
-/chat 会走 candidate_k=50 + query-aware rerank；
-最终注入 context 的是更符合 query 的 top_k chunks。
-```
-
-演示结束后，运行时产物已还原：
-
-```bash
-git restore kb/chroma kb/docs.jsonl kb/docs
-```
-
----
 
 ## Git hygiene
 
@@ -841,7 +749,6 @@ kb/chroma/
 kb/docs/
 kb/docs.jsonl
 eval/results/
-eval/reports/
 eval/kb_seed_manifest.jsonl
 backup_kb_reset/
 ```
@@ -850,8 +757,54 @@ backup_kb_reset/
 
 - `src/**` 源码；
 - `docs/kb_seed/*.md` 源文档；
-- `docs/demo_storyline_day22.md` 演示脚本；
 - `eval/qa_rag_20.jsonl` 评测集；
-- `scripts/eval_qa_rag.py` / `scripts/build_eval_report.py`；
-- `tests/**` 回归测试；
-- README / HANDOFF / day logs / weekly summaries。
+- `scripts/eval_qa_rag.py` 评测脚本；
+- README / HANDOFF / day logs。
+
+## RAG Evaluation Report & Regression Gates (Day20)
+
+Day20 将 Day19 的 RAG QA20 离线评测结果整理成 Markdown 报告，并增加回归门槛。
+
+### Generate report
+
+```bash
+python scripts/build_eval_report.py \
+  --results eval/results/rag_eval_20.jsonl \
+  --summary eval/results/rag_eval_20_summary.json \
+  --out eval/reports/rag_eval_report.md \
+  --strict
+
+
+---
+
+## v1 Closure: CI + System Design (Day23)
+
+Day23 对 chat-api v1 做工程化收口：
+
+- 新增 `requirements.txt`，统一基础依赖安装。
+- 新增 `.github/workflows/ci.yml`，push/PR 自动运行 `pytest -q`。
+- 修复 CI 中 `sentence-transformers` 顶层 import 导致的 mock 测试失败，改为 HF provider 懒加载。
+- 新增 `docs/system_design.md`，将项目从功能列表整理成系统设计说明。
+- 最新 GitHub Actions 通过。
+- 本地测试保持 `44 passed`。
+
+### v1 accepted capabilities
+
+```text
+FastAPI service
+mock / ollama provider
+sync chat / SSE stream
+PromptHub
+Prompt A/B Compare
+Run log / Replay
+KB ingest / search / delete
+RAG sync / stream
+candidate_k + query-aware rerank
+QA20 RAG eval
+Markdown report + strict gates
+Day22 demo storyline
+GitHub Actions CI
+System design document
+```
+
+Day24 后进入 v2：LangChain backend + Advanced RAG + RAG Eval App。
