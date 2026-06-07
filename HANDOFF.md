@@ -1,6 +1,6 @@
-开始新对话前：**“继续 chat-api 计划，从 Day20 开始（RAG 评测报告 + KB Seed 文档补全）。”**
+开始新对话前：**“继续 chat-api 计划，从 Day23 开始（CI 可选 + 系统设计说明 / 架构图 / 权衡 / 边界），当前 Day22 Demo Storyline 已实跑通过。”**
 
-# HANDOFF（给新对话用，更新至 Day19）
+# HANDOFF（给新对话用，更新至 Day22）
 
 ## 0. 环境与项目
 
@@ -14,7 +14,7 @@ WIN_IP=$(grep -m 1 nameserver /etc/resolv.conf | awk '{print $2}')
 export OLLAMA_BASE_URL="http://$WIN_IP:11434"
 ```
 
-已写入 `~/.bashrc`。
+已写入 `~/.bashrc`。如果做 Error Demo 时临时改成 `http://127.0.0.1:1`，演示结束后要恢复上面的 Windows 网关地址并重启 uvicorn。
 
 ## 1. 关键环境变量
 
@@ -41,7 +41,7 @@ KB / RAG：
 - `EMBEDDING_MODEL`（HF embedding 模型路径/名称）
 - `EMBEDDING_DIM`（mock embedding 维度）
 
-## 2. 已完成进度（Day1–Day19）
+## 2. 已完成进度（Day1–Day22）
 
 - Day1：`GET /health` OK
 - Day2：`POST /chat`（mock + schemas）、全局中间件（`x-trace-id` + latency log）、`POST /chat/stream`（mock streaming）OK
@@ -73,18 +73,43 @@ KB / RAG：
   - `/chat/stream` 接入 RAG：`meta/usage/error` 带 `rag`（enabled/top_k/hits/context_chars/citations/error）
   - Demo：增加 RAG 开关 + top_k 输入 + 引用展示；修复 SSE 解析（CRLF/data: 兼容、完整块解析）；修复 Copy Curl 续行
   - KB 管理：`GET /kb/documents`（limit/offset/include_deleted），`DELETE /kb/documents/{doc_id}`（Chroma delete + md delete + tombstone）
-  - 新增契约测试：demo/stream/kb（Day18 相关）
-  - `pytest -q` 全绿：**30 passed**
-- **Day19：RAG KB 评测闭环 + KB Seed 清洗 + query-aware rerank**
+  - 新增契约测试：demo/stream/kb；当时 `pytest -q` 全绿：30 passed
+- Day19：RAG KB 评测闭环 + KB Seed 清洗 + query-aware rerank
   - 新增 `eval/qa_rag_20.jsonl`：20 条 QA 评测集
   - 新增 `scripts/eval_qa_rag.py`：调用 `/chat`，输出 `results.jsonl` 与 `summary.json`
   - 固化 `extract_index_text()`：只索引正文，遇到 `---` 或 `# Keywords/# QA Seeds/# Appendix/# Changelog` 截断
   - 新增/整理 `docs/kb_seed/01-11`，其中 `11_Environment & Ops.md` 覆盖 WSL/Windows/Ollama/本地 embedding 模型路径
   - 修复 RAG metadata 形状：KB 关闭/开启都用统一 rag 结构（通过 `enabled` 标识）
-  - 引入 `KB_CANDIDATE_K=50` + `rerank_hits()` query-aware 专题加分：避免只靠 top_k 造成关键 chunk 漏召回
+  - 引入 `KB_CANDIDATE_K=50` + `rerank_hits()` query-aware 专题加分
   - 修复 `answer_hit` 假阳性：对“不确定/需要更多上下文”等回答做拦截
   - 修复 rerank 过拟合：取消 RAG 文档无条件加分，改为 query 触发的 title/topic boost
-  - 最终 QA20 验收：**answer_hit_rate=95%，citation_hit_rate=100%，effective_rag_rate=100%，avg_latency_ms≈1953ms**
+  - 最终 QA20：answer_hit_rate=95%，citation_hit_rate=100%，effective_rag_rate=100%，avg_latency_ms≈1953ms
+- Day20：RAG Eval Report + Regression Gates + KB Seed 文档补全
+  - 新增 `scripts/build_eval_report.py`
+  - 生成 `eval/reports/rag_eval_report.md`
+  - strict regression gates：`answer_hit_rate>=0.90`、`citation_hit_rate>=0.95`、`effective_rag_rate>=0.95`、`title_hit_rate>=0.85`、`p95_latency_ms<=6000`、`failed_count==0`
+  - 当前 report gate：PASS（answer=95%、citation=100%、effective_rag=100%、title=95%、p95≈3857ms）
+  - 新增 Day19/Day20 回归测试：`tests/kb/test_index_text.py`、`tests/eval/test_eval_metrics_unit.py`、`tests/kb/test_rag_rerank.py`
+  - 全量测试：44 passed
+  - 新增 KB Seed 源文档：`12_RAG Eval Report & Regression Gates.md`、`13_Retrieval Rerank & Candidate Pool.md`
+  - 注意：12/13 先作为源文档提交，不急着入库，避免立即改变 QA20 召回分布
+- Day21：Demo Storyline 文档化
+  - 新增 `docs/demo_storyline_day22.md`
+  - 规划 Day22 演示链路：Health → PromptHub → RAG Sync → RAG Stream → A/B Compare → Replay → Error Demo → Eval Report
+  - Day21 只改文档，不改变 API/schema/RAG/SSE 逻辑，不需要新增契约测试；用现有 `pytest -q` 回归确认
+- **Day22：Demo Storyline 全链路实跑**
+  - `/health` 通过：`{"status":"ok"}`
+  - `/prompts` 通过：`qa_strict:v1`、`chat:v1`
+  - 重建 live KB 为 01-11 kb_seed，修复最初 live KB 只含 demo 文档导致 RAG 回答“不确定”的问题
+  - RAG Sync Chat 通过：`docs.jsonl 的作用是什么？` 能返回项目语义答案，citations 指向 `KB Ingest & Search`
+  - RAG Streaming SSE 通过：`meta → token* → usage → done`，usage.rag.citations 指向 `RAG in Chat/Stream`
+  - Prompt A/B Compare 通过：返回 `compare_group_id`、A/B trace_id、latency/output diff
+  - Replay 通过：`/runs/trace/{trace_id}` 与 `/runs/compare/{compare_group_id}` 均可回放
+  - Error Demo 通过：`/chat` 下游失败返回 502 structured detail；`/chat/stream` 下游失败返回 HTTP 200 + `event:error`
+  - Eval Report strict gate 通过
+  - 恢复正常 Ollama 后 `/chat` 可用
+  - `pytest -q`：44 passed
+  - 清理运行时产物：`git restore kb/chroma kb/docs.jsonl kb/docs`，工作区 clean
 
 ## 3. 当前状态（可用验收）
 
@@ -92,10 +117,13 @@ KB / RAG：
 - ollama：可达时 `/chat`、`/chat/stream`、`/prompt/compare` OK；不可达时 `/chat`=502(detail 结构化)，`/chat/stream`=200 + `event:error`
 - RAG：同步与流式均支持 `use_kb/kb_top_k`；citations 可追溯到 `doc_id/chunk_id/source/title`
 - 评测：`python scripts/eval_qa_rag.py --qa eval/qa_rag_20.jsonl --provider ollama` 可跑完 QA20，并输出 summary
+- 报告：`python scripts/build_eval_report.py ... --strict` 可生成 report，并在当前结果下通过 regression gates
+- 测试：`pytest -q` 当前 **44 passed**
+- Demo：`docs/demo_storyline_day22.md` 已经实跑验证，可作为面试演示脚本
 
-## 4. Day19 重要经验（面试可讲）
+## 4. Day19–Day22 重要经验（面试可讲）
 
-Day19 不是一次顺利写完的功能，而是一次完整的工程排障闭环：
+Day19–Day22 是一次完整的 RAG 工程排障、评测与演示闭环：
 
 - API schema 不匹配：最初入库 payload 用 `markdown`，后端实际要求 `text`，导致 422；通过 OpenAPI 自检定位。
 - Shell heredoc/curl 管道错误：多次出现 `syntax error near unexpected token |`，最终固定成稳定的 `python ... | curl -d @-` 入库模板。
@@ -107,11 +135,33 @@ Day19 不是一次顺利写完的功能，而是一次完整的工程排障闭�
 - rerank 一度过拟合，把所有题都吸到 `RAG in Chat/Stream`；改为“只有 query 命中特定主题词才给对应 title 加分”。
 - answer_hit 假阳性：模型回答“不确定”但包含关键词，最初被误判通过；增加 uncertain 拦截。
 - answer_hit 假阴性：业务语义“没有找到记录所以 404”被“不确定模式”误杀；收窄 uncertainty patterns。
-- Git hygiene：运行时产物 `kb/chroma/`、`kb/docs/`、`kb/docs.jsonl`、`eval/results/` 不提交，只提交源码、KB seed 源文档、QA 集和评测脚本。
-- Day19 还沉淀了关键回归点：`extract_index_text` 防污染、`answer_hit` uncertain guard、`candidate_k=50`、query-aware rerank、citation/title 分层指标。
+- Report gate：从“控制台指标”升级到 `rag_eval_report.md` + `--strict`，为后续 CI/回归门槛做准备。
+- Day22 live demo 暴露 live KB 状态问题：最初只命中 demo 文档导致 docs.jsonl 问题回答“不确定”；重建 kb_seed 后通过。
+- Day22 验证了 raw `/kb/search` 与 `/chat` 的差异：裸检索 top5 不一定准，`/chat` 走 `candidate_k=50 + query-aware rerank` 后能拉回正确 chunk。
+- Git hygiene：运行时产物 `kb/chroma/`、`kb/docs/`、`kb/docs.jsonl`、`eval/results/`、`eval/reports/` 不提交，只提交源码、KB seed 源文档、QA 集和评测脚本。
 
-## 5. 下一步（Day20）
+## 5. 下一步（Day23）
 
-- 生成 Day19 评测报告：从 `eval/results/rag_eval_20.jsonl` 和 summary 中整理指标、失败样例、rerank 前后对比。
-- 给评测设置回归门槛：例如 `answer_hit_rate >= 0.90`、`citation_hit_rate >= 0.95`、`effective_rag_rate >= 0.95`。
-- 继续补全 `docs/kb_seed` 剩余主题文档（建议 12-20），让 KB Seed 从“项目核心链路”扩展到“部署、评测、Agent/RAG 进阶、面试解释”等可复用知识库。
+Day23 建议主题：**CI 可选 + 系统设计说明（架构图 / 权衡 / 边界）**。
+
+建议任务：
+
+1. 补最小 GitHub Actions CI（可选）
+   - Python 3.10
+   - install deps
+   - `pytest -q`
+2. 写一页系统设计说明：
+   - 架构图：Client → FastAPI → PromptHub/RAG/LLMEngine/RunStore/KB
+   - 请求链路：sync `/chat` 与 stream `/chat/stream`
+   - RAG 数据链路：ingest → chunk → embedding → Chroma → candidate_k → rerank → top_k → context → citations
+   - 错误语义：sync 502 vs stream event:error
+   - 可观测性：trace_id、latency_ms、run log、report gate
+   - 权衡：native RAG vs LangChain、rule-based eval vs LLM judge、candidate_k/top_k、运行时产物不入 Git
+   - 当前边界：无鉴权、无多租户、无生产级持久化、无真实 reranker、无 CI 部署
+3. v1 收尾判断：
+   - pytest 全绿
+   - Day22 demo 可复现
+   - README/HANDOFF/day logs 完整
+   - 系统设计说明完成
+   - Git 工作区 clean
+
