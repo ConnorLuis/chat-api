@@ -2,7 +2,6 @@ import hashlib
 import math
 from src.app.core.settings import Settings
 from abc import ABC, abstractmethod
-from sentence_transformers import SentenceTransformer
 
 """
 统一接口：EmbeddingEngine
@@ -62,9 +61,18 @@ class HFEmbeddingEngine(EmbeddingEngine):
     # init 时加载模型并读维度：get_sentence_embedding_dimension()
     # embed_documents：批量 encode（normalize_embeddings=True）
     # embed_query：单条 encode（normalize_embeddings=True）
-    def __init__(self, model_name_or_path: str, device: str=None, **kwargs):
-        self.model = SentenceTransformer(model_name_or_path=model_name_or_path, device=device, **kwargs)
-        self._dim = self.model.get_sentence_embedding_dimension()
+    class HFEmbeddingEngine:
+        def __init__(self, model_name: str):
+            try:
+                from sentence_transformers import SentenceTransformer
+            except ImportError as e:
+                raise RuntimeError(
+                    "EMBEDDING_PROVIDER=hf requires sentence-transformers. "
+                    "Install it with `pip install sentence-transformers`, "
+                    "or use EMBEDDING_PROVIDER=mock for tests/CI."
+                ) from e
+
+            self.model = SentenceTransformer(model_name)
 
     @property
     def dim(self) -> int:
