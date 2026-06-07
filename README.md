@@ -9,8 +9,8 @@
 * 可插拔 LLM 引擎：mock / ollama
 * RAG：KB 入库/检索、同步/流式上下文注入、citations 溯源
 * KB 管理：文档列表、软删除 tombstone、Chroma 向量清理
-* RAG 评测：QA20 离线评测、answer/citation/effective_rag/latency 指标、Markdown report + regression gates
-* pytest：基础回归 + SSE 契约测试 + 错误契约测试 + RAG 评测回归测试
+* RAG 评测：QA20 离线评测、answer/citation/effective_rag/latency 指标
+* pytest：基础回归 + SSE 契约测试 + 错误契约测试
 
 ---
 
@@ -627,6 +627,8 @@ python scripts/eval_qa_rag.py \
 
 ### Final Day19 result
 
+最终 QA20 验收结果：
+
 ```text
 total = 20
 success = 20
@@ -637,15 +639,73 @@ effective_rag_rate = 100.0%
 avg_latency_ms ≈ 1953ms
 ```
 
-### Regression tests
+### Lessons from Day19
 
-Day19/Day20 补充了 3 个关键回归测试：
+Day19 中间经历了多次真实工程问题，并逐个修复：
 
-- `tests/kb/test_index_text.py`：锁死 `extract_index_text` 防污染规则。
-- `tests/eval/test_eval_metrics_unit.py`：锁死 uncertain answer guard 与 citation/title 分层口径。
-- `tests/kb/test_rag_rerank.py`：锁死 query-aware rerank，防止 RAG 文档全局吸走召回。
+- 入库 payload 用错字段：`markdown` → `text`，通过 `/openapi.json` 定位 422。
+- shell heredoc 管道写错，固定为 `python ... | curl -d @-` 模板。
+- 手动删除 `kb/docs/*.md` 造成状态不一致，改为 API tombstone + Chroma delete。
+- `Keywords/QA Seeds` 被索引导致召回污染，用 `extract_index_text()` 固化规则。
+- md 已更新但 Chroma 仍是旧索引，清理 Chroma 后重新入库验证。
+- `candidate_k/rerank/top_k` chunk 原始向量排序靠后，用 `KB_CANDIDATE_K=50` + query-aware rerank 修复。
+- rerank 一度过拟合到 `RAG in Chat/Stream`，改为 query 触发的专题 title boost。
+- 关键词评测一度误判“不确定回答”为通过，加入 uncertain 拦截。
+- “没有找到记录所以 404”一度被 uncertainty pattern 误杀，收窄拒答模板。
+- Git 提交时区分源码与运行时产物：不提交 `kb/chroma/`、`kb/docs/`、`kb/docs.jsonl`、`eval/results/`。
+- Day19 同时补充了 RAG 评测相关回归点：KB Seed 截断规则、uncertain answer guard、citation/title 命中口径、candidate_k + query-aware rerank，避免 QA Seeds 污染、关键词假阳性和 rerank 全局偏置。
 
 ---
+
+## Demo Storyline (Day21)
+
+Day21 不新增后端接口，也不修改核心业务逻辑，而是把已有能力整理成一条 Day22 可演示故事线：
+
+```text
+Health
+→ PromptHub
+→ RAG Sync Chat
+→ RAG Streaming SSE
+→ Prompt A/B Compare
+→ Replay
+→ Error Demo
+→ Eval Report
+```
+
+演示文档：
+
+- `docs/demo_storyline_day22.md`
+
+该文档包含每一步的命令、预期输出和讲解点，方便在面试或复盘时按顺序展示完整 LLM 应用工程闭环。
+
+Day21 不需要新增契约测试，因为没有改变 API contract、schema、RAG 行为或运行时逻辑；仅通过现有回归测试确认系统未受影响：
+
+```bash
+pytest -q
+# 44 passed
+```
+
+
+## Git hygiene
+
+以下是运行时产物，不建议提交：
+
+```gitignore
+kb/chroma/
+kb/docs/
+kb/docs.jsonl
+eval/results/
+eval/kb_seed_manifest.jsonl
+backup_kb_reset/
+```
+
+建议提交：
+
+- `src/**` 源码；
+- `docs/kb_seed/*.md` 源文档；
+- `eval/qa_rag_20.jsonl` 评测集；
+- `scripts/eval_qa_rag.py` 评测脚本；
+- README / HANDOFF / day logs。
 
 ## RAG Evaluation Report & Regression Gates (Day20)
 
@@ -659,63 +719,3 @@ python scripts/build_eval_report.py \
   --summary eval/results/rag_eval_20_summary.json \
   --out eval/reports/rag_eval_report.md \
   --strict
-```
-
-成功输出：
-
-```text
-Report generated: eval/reports/rag_eval_report.md
-All regression gates passed!
-```
-
-### Current QA20 result
-
-- answer_hit_rate: 95.0%
-- citation_hit_rate: 100.0%
-- effective_rag_rate: 100.0%
-- title_hit_rate: 95.0%
-- failed: 0
-- p95_latency_ms: 3857ms（低于 6000ms gate）
-
-### Regression gates
-
-- answer_hit_rate >= 0.90
-- citation_hit_rate >= 0.95
-- effective_rag_rate >= 0.95
-- title_hit_rate >= 0.85
-- failed_count == 0
-- p95_latency_ms <= 6000
-
-### Added KB Seed docs
-
-Day20 新增两篇 KB Seed 源文档：
-
-- `docs/kb_seed/12_RAG Eval Report & Regression Gates.md`
-- `docs/kb_seed/13_Retrieval Rerank & Candidate Pool.md`
-
-建议先提交源文档，不急着立刻入库；如果后续把 12/13 纳入 Chroma，需要重新跑 QA20 回归，观察新增文档是否影响召回分布。
-
----
-
-## Git hygiene
-
-以下是运行时产物，不建议提交：
-
-```gitignore
-kb/chroma/
-kb/docs/
-kb/docs.jsonl
-eval/results/
-eval/reports/
-eval/kb_seed_manifest.jsonl
-backup_kb_reset/
-```
-
-建议提交：
-
-- `src/**` 源码；
-- `docs/kb_seed/*.md` 源文档；
-- `eval/qa_rag_20.jsonl` 评测集；
-- `scripts/eval_qa_rag.py` / `scripts/build_eval_report.py` 评测与报告脚本；
-- `tests/**` 回归测试；
-- README / HANDOFF / day logs。
