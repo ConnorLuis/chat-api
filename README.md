@@ -8,6 +8,7 @@
 * 全局中间件：`x-trace-id` + latency 日志
 * 可插拔 LLM 引擎：mock / ollama
 * RAG：KB 入库/检索、同步/流式上下文注入、citations 溯源
+* RAG backend skeleton：`RAG_BACKEND=native|langchain`，为 v2 LangChain / Advanced RAG 扩展预留入口
 * KB 管理：文档列表、软删除 tombstone、Chroma 向量清理
 * RAG 评测：QA20 离线评测、answer/citation/effective_rag/latency 指标
 * pytest：基础回归 + SSE 契约测试 + 错误契约测试
@@ -30,6 +31,30 @@
 conda activate chatapi
 python -m pip install -r requirements.txt
 ```
+
+
+### Optional: LangChain backend dependencies (Day24 / v2)
+
+Day24 新增可插拔 RAG backend skeleton。默认仍使用 native backend；如果后续要启用 LangChain backend，再单独安装：
+
+```bash
+python -m pip install -r requirements-langchain.txt
+```
+
+当前可选依赖文件：
+
+```text
+requirements-langchain.txt
+```
+
+包含：
+
+```text
+langchain
+langchain-ollama
+```
+
+主 `requirements.txt` 不包含 LangChain，避免 CI 和基础测试被可选依赖污染。
 
 ### 2) Run server
 
@@ -56,6 +81,7 @@ curl http://localhost:8000/health
 * `KB_CHROMA_DIR` (default: `${KB_DIR}/chroma`)
 * `KB_TOP_K` (default: `5`)
 * `KB_CANDIDATE_K` (default: `50`)：先召回更大候选池，再 rerank 截断到 `kb_top_k`
+* `RAG_BACKEND` (default: `native`, options: `native|langchain`)：Day24 新增，当前默认保持 native 主链路，LangChain 为可选 skeleton
 * `EMBEDDING_PROVIDER` (default: `mock`, options: `mock|hf`)
 * `EMBEDDING_MODEL`：HF embedding 模型名或本地路径
 
@@ -267,7 +293,7 @@ pytest -q
 Day23 新增 GitHub Actions：
 
 - workflow: `.github/workflows/ci.yml`
-- trigger: push / pull_request to `master`
+- trigger: push to all branches / pull_request to `master`
 - Python: 3.10
 - command: `pytest -q`
 - embedding: `EMBEDDING_PROVIDER=mock`
@@ -808,3 +834,87 @@ System design document
 ```
 
 Day24 后进入 v2：LangChain backend + Advanced RAG + RAG Eval App。
+
+---
+
+## RAG Backend Skeleton (Day24 / v2)
+
+Day24 是 chat-api v2 的起点，目标不是立即替换现有 RAG 主链路，而是先建立可插拔 RAG backend 架构。
+
+### Branch
+
+```text
+v2-langchain-rag
+```
+
+### Added files
+
+```text
+requirements-langchain.txt
+src/app/rag/__init__.py
+src/app/rag/base.py
+src/app/rag/schemas.py
+src/app/rag/native_backend.py
+src/app/rag/langchain_backend.py
+src/app/rag/factory.py
+tests/rag/test_rag_backend_factory.py
+```
+
+### RAG_BACKEND
+
+新增环境变量：
+
+```bash
+export RAG_BACKEND=native
+# or
+export RAG_BACKEND=langchain
+```
+
+当前行为：
+
+- `native`：默认值，封装现有 embedding → Chroma → rerank → context pipeline。
+- `langchain`：Day24 只提供 skeleton + optional dependency lazy loading；正式 LangChain retriever 放到 Day26+。
+
+### Why skeleton first?
+
+Day24 没有立刻改 `/chat` 和 `/chat/stream` 主链路，原因是：
+
+- 这两个接口是 v1 最核心稳定链路；
+- 直接改动会影响 `metadata.rag` 和 SSE `rag` 契约；
+- sync / stream 两套 RAG 分支都需要同步验证；
+- QA20 和 report gate 也需要重新确认。
+
+因此 Day24 只收一个稳定目标：
+
+```text
+RAG backend abstraction + factory tests + optional LangChain dependency + CI on feature branches
+```
+
+### Tests
+
+```bash
+pytest tests/rag/test_rag_backend_factory.py -q
+# 3 passed
+
+pytest -q
+# 47 passed
+```
+
+### CI
+
+Day24 将 CI 触发范围从只跑 `master` 扩展为所有分支 push 都跑：
+
+```yaml
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [ master ]
+```
+
+`v2-langchain-rag` 分支 GitHub Actions 已通过。
+
+### Next: Day25
+
+Day25 计划把 `routes_chat.py` 接入 `get_rag_backend().build_context()`，统一 `/chat` 与 `/chat/stream` 的 RAG 构建逻辑，同时保持现有输出契约不变。
+
