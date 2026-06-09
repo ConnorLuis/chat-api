@@ -98,5 +98,10 @@ class Settings:
     def EMBEDDING_DIM(self) -> str:
         return getenv("EMBEDDING_DIM", "512")
 
+    # RAG 后端类型（native/其他）
+    @property
+    def RAG_BACKEND(self) -> str:
+        return getenv("RAG_BACKEND", "native").lower()
+
 
 settings = Settings()
