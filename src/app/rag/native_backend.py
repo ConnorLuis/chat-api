@@ -24,7 +24,7 @@ class NativeRAGBackend(RAGBackend):
         candidate_k = max(top_k, settings.KB_CANDIDATE_K)
 
         collection = chroma_store.get_collection(settings.KB_CHROMA_DIR, settings.KB_COLLECTION)
-        embed_engine = get_embedding_engine()
+        embed_engine = get_embedding_engine(settings)
 
         query_vector = embed_engine.embed_query(query)
         hits_raw = chroma_store.query(collection, query_vector, top_k=candidate_k)
@@ -64,5 +64,5 @@ class NativeRAGBackend(RAGBackend):
             context_chars=len(context_text),
             citations=rag_citations,
             error=None,
-            extra={"backend", "native"}
+            extra={"backend": "native"}
         )

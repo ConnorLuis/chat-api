@@ -5,17 +5,14 @@ from fastapi import APIRouter, Request, HTTPException
 
 from src.app.core.errors import build_error
 from src.app.core.logging import get_trace_id  # 链路追踪ID
-from src.app.kb import chroma_store
-from src.app.kb.embeddings import get_embedding_engine
-from src.app.kb.rag_context import build_rag_context, rerank_hits
-from src.app.kb.schemas import Hit
 from src.app.llm.prompt_registry import PromptRegistry, ensure_system_prompt
 from src.app.llm.run_logger import append_jsonl
 from src.app.core.settings import settings
-from src.app.llm.schemas import ChatRequest, ChatResponse, ErrorResponse, RagMetadata  # 请求/响应模型
+from src.app.llm.schemas import ChatRequest, ChatResponse, ErrorResponse, RagMetadata, Citation  # 请求/响应模型
 from src.app.llm.engines import get_engine # 引擎工厂函数
 from fastapi.responses import StreamingResponse # 流式响应
 from src.app.core.sse import sse_event # SSE格式生成函数
+from src.app.rag.factory import get_rag_backend
 
 
 # 创建一个路由实例，后续的接口都注册在这个实例上，方便模块化管理。
@@ -25,6 +22,21 @@ prompt_registry = PromptRegistry(settings.PROMPTS_DIR)
 
 def engine_model(engine) -> str:
     return (getattr(engine, "model", None) or "unknown")
+
+def build_rag_prompt_context(context_text: str) -> str:
+    return f"你是一个严谨助手 仅基于以下资料回答，并在回答末尾列出引用编号 \n\n<CONTEXT>\n{context_text}"
+
+
+def to_llm_citations(citations) -> list[Citation]:
+    return [
+        Citation(
+            doc_id=c.doc_id,
+            chunk_id=c.chunk_id,
+            source=c.source,
+            title=c.title,
+        )
+        for c in citations
+    ]
 
 CHAT_OPENAPI_EXAMPLES = {
     "mock": {
@@ -104,8 +116,6 @@ def chat(req: Request, body: Annotated[ChatRequest, Body(openapi_examples=CHAT_O
     )
     try:
         if body.use_kb:
-            collection = chroma_store.get_collection(settings.KB_CHROMA_DIR, settings.KB_COLLECTION, space="cosine")
-            embed_engine = get_embedding_engine(settings)
             query = _last_user_text(messages)
             if not query:
                 # KB 开启但没有可用 query：当作无命中（但 rag 仍然是 enabled=true）
@@ -117,37 +127,23 @@ def chat(req: Request, body: Annotated[ChatRequest, Body(openapi_examples=CHAT_O
                 rag_meta.error = None
                 context = None
             else:
-                candidate_k = max(top_k, settings.KB_CANDIDATE_K)
-                query_vector = embed_engine.embed_query(query)
-                hits_raw = chroma_store.query(collection, query_vector, top_k=candidate_k)
-                for h in hits_raw:
-                    doc_id = h["metadata"]["doc_id"]
-                    chunk_id = h["metadata"].get("chunk_id", h["id"])
-                    score = h["score"]
-                    text = h["text"]
-                    source = h["metadata"]["source"]
-                    title = h["metadata"].get("title")
-                    hit = Hit(doc_id=doc_id, chunk_id=chunk_id, score=score, text=text, source=source, title=title)
-                    hits.append(hit)
-                hits = rerank_hits(query=query, hits=hits)
-                hits = hits[:top_k]
-                context_text, citations = build_rag_context(hits=hits, max_chars=settings.KB_MAX_CONTEXT_CHARS)
-                if not hits:
+                rag_backend = get_rag_backend()
+                rag_result = rag_backend.build_context(query=query, top_k=top_k)
+
+                llm_citations = to_llm_citations(rag_result.citations)
+
+                if not rag_result.hits:
                     context = None
-                    rag_meta.enabled = True
-                    rag_meta.top_k = top_k
-                    rag_meta.candidate_k = candidate_k
-                    rag_meta.hits = 0
-                    rag_meta.citations = []
-                    rag_meta.error = None
                 else:
-                    context = f"你是一个严谨助手 仅基于以下资料回答，并在回答末尾列出引用编号 \n\n<CONTEXT>\n{context_text}"
-                    rag_meta.enabled = True
-                    rag_meta.top_k = top_k
-                    rag_meta.candidate_k = candidate_k
-                    rag_meta.hits = len(hits)
-                    rag_meta.citations = citations
-                    rag_meta.error = None
+                    context = build_rag_prompt_context(rag_result.context)
+
+                rag_meta.enabled = True
+                rag_meta.top_k = rag_result.top_k
+                rag_meta.candidate_k = rag_result.candidate_k
+                rag_meta.hits = rag_result.hits
+                rag_meta.citations = llm_citations
+                rag_meta.error = rag_result.error
+
     except Exception as e:
         rag_error = str(e)
         hits = []
@@ -328,9 +324,8 @@ async def chat_stream(req: Request, body: Annotated[ChatRequest, Body(openapi_ex
         }
         try:
             if rag_enabled:
-                collection = chroma_store.get_collection(settings.KB_CHROMA_DIR, settings.KB_COLLECTION, space="cosine")
-                embed_engine = get_embedding_engine(settings)
                 query = _last_user_text(messages)
+
                 if not query:
                     context = None
                     hits = 0
@@ -343,44 +338,24 @@ async def chat_stream(req: Request, body: Annotated[ChatRequest, Body(openapi_ex
                         "error": None,
                     })
                 else:
-                    candidate_k = max(top_k, settings.KB_CANDIDATE_K)
+                    rag_backend = get_rag_backend()
+                    rag_result = rag_backend.build_context(query=query, top_k=top_k)
+
+                    citations = to_llm_citations(rag_result.citations)
+                    hits = rag_result.hits
+                    candidate_k = rag_result.candidate_k
+
+                    if not rag_result.hits:
+                        context = None
+                    else:
+                        context = build_rag_prompt_context(rag_result.context)
+
                     rag_dict.update({
                         "enabled": True,
-                        "top_k": top_k,
-                        "candidate_k": candidate_k,
-                        "error": None,
-                    })
-                    query_vector = embed_engine.embed_query(query)
-                    hits_raw = chroma_store.query(collection, query_vector, top_k=candidate_k)
-                    for h in hits_raw:
-                        doc_id = h["metadata"]["doc_id"]
-                        chunk_id = h["metadata"].get("chunk_id", h["id"])
-                        score = h["score"]
-                        text = h["text"]
-                        source = h["metadata"]["source"]
-                        title = h["metadata"].get("title")
-                        hit = Hit(doc_id=doc_id, chunk_id=chunk_id, score=score, text=text, source=source, title=title)
-                        hits_list.append(hit)
-                        hits = len(hits_list)
-                    hits_list = rerank_hits(query, hits=hits_list)
-                    hits_list = hits_list[:top_k]
-                    hits = len(hits_list)
-                    context_text, citations = build_rag_context(hits=hits_list, max_chars=settings.KB_MAX_CONTEXT_CHARS)
-                if not hits:
-                    context = None
-                    rag_dict.update({
-                        "enabled": True,
-                        "top_k": top_k,
-                        "hits": 0,
-                        "error": None,
-                    })
-                else:
-                    context = f"你是一个严谨助手 仅基于以下资料回答，并在回答末尾列出引用编号 \n\n<CONTEXT>\n{context_text}"
-                    rag_dict.update({
-                        "enabled": True,
-                        "top_k": top_k,
-                        "hits": hits,
-                        "error": None,
+                        "top_k": rag_result.top_k,
+                        "hits": rag_result.hits,
+                        "candidate_k": rag_result.candidate_k,
+                        "error": rag_result.error,
                     })
         except Exception as e:
             rag_error = str(e)
@@ -389,9 +364,9 @@ async def chat_stream(req: Request, body: Annotated[ChatRequest, Body(openapi_ex
             context = None
 
             rag_dict.update({
-                "enabled": True,  # 因为 user 开了 use_kb，属于 best-effort 失败
+                "enabled": True,
                 "top_k": top_k,
-                "candidate_k": candidate_k,  # 早期异常可能还是 0，OK
+                "candidate_k": candidate_k,
                 "hits": 0,
                 "error": rag_error,
             })
