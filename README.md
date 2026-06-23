@@ -8,7 +8,7 @@
 * 全局中间件：`x-trace-id` + latency 日志
 * 可插拔 LLM 引擎：mock / ollama
 * RAG：KB 入库/检索、同步/流式上下文注入、citations 溯源
-* RAG backend skeleton：`RAG_BACKEND=native|langchain`，为 v2 LangChain / Advanced RAG 扩展预留入口
+* RAG backend abstraction：`RAG_BACKEND=native|langchain`；`/chat` 与 `/chat/stream` 已统一通过 backend 构建 RAG 上下文，LangChain backend 已支持真实检索
 * KB 管理：文档列表、软删除 tombstone、Chroma 向量清理
 * RAG 评测：QA20 离线评测、answer/citation/effective_rag/latency 指标
 * pytest：基础回归 + SSE 契约测试 + 错误契约测试
@@ -52,6 +52,7 @@ requirements-langchain.txt
 ```text
 langchain
 langchain-ollama
+langchain-chroma
 ```
 
 主 `requirements.txt` 不包含 LangChain，避免 CI 和基础测试被可选依赖污染。
@@ -81,7 +82,7 @@ curl http://localhost:8000/health
 * `KB_CHROMA_DIR` (default: `${KB_DIR}/chroma`)
 * `KB_TOP_K` (default: `5`)
 * `KB_CANDIDATE_K` (default: `50`)：先召回更大候选池，再 rerank 截断到 `kb_top_k`
-* `RAG_BACKEND` (default: `native`, options: `native|langchain`)：Day24 新增，当前默认保持 native 主链路，LangChain 为可选 skeleton
+* `RAG_BACKEND` (default: `native`, options: `native|langchain`)：Day24 新增 backend skeleton；Day25 接入 `/chat` 与 `/chat/stream`；Day26 已实现 LangChain Chroma retriever
 * `EMBEDDING_PROVIDER` (default: `mock`, options: `mock|hf`)
 * `EMBEDDING_MODEL`：HF embedding 模型名或本地路径
 
@@ -799,7 +800,7 @@ python scripts/build_eval_report.py \
   --summary eval/results/rag_eval_20_summary.json \
   --out eval/reports/rag_eval_report.md \
   --strict
-
+```
 
 ---
 
@@ -914,7 +915,92 @@ on:
 
 `v2-langchain-rag` 分支 GitHub Actions 已通过。
 
-### Next: Day25
+### Day25 / Day26 completed
 
-Day25 计划把 `routes_chat.py` 接入 `get_rag_backend().build_context()`，统一 `/chat` 与 `/chat/stream` 的 RAG 构建逻辑，同时保持现有输出契约不变。
+Day25 已把 `routes_chat.py` 接入 `get_rag_backend().build_context()`，统一 `/chat` 与 `/chat/stream` 的 RAG 构建逻辑，同时保持现有输出契约不变。
 
+Day26 已实现 `RAG_BACKEND=langchain` 的真实检索能力：通过 `langchain_chroma.Chroma` 查询现有 Chroma KB，并复用项目自己的 embedding engine，保证查询向量空间与入库向量空间一致。
+
+---
+
+## RAGBackend Route Integration (Day25 / v2)
+
+Day25 将 Day24 的 RAG backend abstraction 正式接入主聊天链路。
+
+```text
+2c672b6 refactor(day25): route chat rag through backend
+```
+
+Day25 之后，`/chat` 与 `/chat/stream` 都调用同一个 backend 接口：
+
+```python
+rag_backend = get_rag_backend()
+rag_result = rag_backend.build_context(query=query, top_k=top_k)
+```
+
+route 层只负责把 `RAGContextResult` 转回既有 API/SSE contract。
+
+验证：
+
+```bash
+pytest tests/chat/test_chat_rag_contract.py -q
+pytest tests/stream/test_stream_rag_contract.py -q
+pytest -q
+```
+
+---
+
+## LangChain RAG Backend Retrieval (Day26 / v2)
+
+Day26 让 `RAG_BACKEND=langchain` 从 skeleton 变成真正的检索后端。
+
+```text
+c172523 feat(day26): implement langchain rag backend retrieval
+1e19e3c test(day26): assert langchain rag backend marker
+```
+
+实现方式：
+
+```text
+get_embedding_engine(settings)
+→ ProjectEmbeddings
+→ langchain_chroma.Chroma
+→ similarity_search_with_score
+→ Hit
+→ rerank_hits
+→ build_rag_context
+→ RAGContextResult
+```
+
+LangChain backend 仍保持统一输出：
+
+```text
+RAGContextResult.extra = {
+  "backend": "langchain",
+  "vectorstore": "langchain_chroma"
+}
+```
+
+验证：
+
+```bash
+pytest tests/rag/test_langchain_backend_contract.py -q
+# 2 passed
+
+RAG_BACKEND=langchain pytest tests/chat/test_chat_rag_contract.py -q
+# 2 passed
+
+RAG_BACKEND=langchain pytest tests/stream/test_stream_rag_contract.py -q
+# 2 passed
+
+pytest -q
+# 49 passed
+```
+
+注意：LangChain / Chroma 测试可能修改 `kb/chroma/chroma.sqlite3`，这是运行时产物，不要提交：
+
+```bash
+git restore kb/chroma/chroma.sqlite3
+```
+
+Day27 将进入 RAG Observability：backend marker + latency breakdown + trace 增强。

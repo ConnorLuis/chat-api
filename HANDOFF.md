@@ -1,4 +1,4 @@
-开始新对话前：**“继续 chat-api v2，从 Day25 开始（routes_chat.py 接入 RAGBackend，统一 /chat 与 /chat/stream 的 RAG 构建逻辑），当前 Day24 已完成 LangChain RAG backend skeleton。”**
+开始新对话前：**“继续 chat-api v2，从 Day27 开始（RAG Observability：latency breakdown + trace 增强），当前 Day26 已完成 LangChain RAG backend retriever，native/langchain 双 backend 均可通过契约测试。”**
 
 # HANDOFF（给新对话用，更新至 Day24）
 
@@ -52,7 +52,7 @@ Embedding：
 
 ---
 
-## 2. 已完成进度概览（Day1–Day24）
+## 2. 已完成进度概览（Day1–Day26）
 
 ### Day1–Day12：FastAPI Chat Service 基础能力
 
@@ -190,6 +190,55 @@ Embedding：
 - `v2-langchain-rag` 分支 GitHub Actions 通过。
 - Day24 不接入 `/chat` 和 `/chat/stream` 主链路，只收一个稳定目标：可插拔 RAG backend 骨架 + factory 测试 + CI 通过。
 
+### Day25：routes_chat.py 接入 RAGBackend
+
+- 提交：`2c672b6`，message：`refactor(day25): route chat rag through backend`。
+- 修改文件：`src/app/api/routes_chat.py`、`src/app/rag/native_backend.py`。
+- `/chat` 与 `/chat/stream` 不再各自手写 embedding / Chroma / Hit / rerank / build_rag_context，而是统一调用：
+  - `get_rag_backend().build_context(query=query, top_k=top_k)`
+- route 层只负责把 `RAGContextResult` 转回原有 `RagMetadata` / SSE `rag` 结构，保持 API contract 不变。
+- 新增 helper：
+  - `build_rag_prompt_context(context_text)`：包装 backend context 为原有 system context。
+  - `to_llm_citations(citations)`：把 `RAGCitation` 转回原有 `Citation` schema。
+- 修复 `NativeRAGBackend.build_context()` 的真实运行问题：
+  - `get_embedding_engine()` → `get_embedding_engine(settings)`。
+  - `extra={"backend", "native"}` → `extra={"backend": "native"}`。
+- 验收：
+  - `pytest tests/chat/test_chat_rag_contract.py -q` → 2 passed
+  - `pytest tests/stream/test_stream_rag_contract.py -q` → 2 passed
+  - `pytest -q` → 47 passed
+  - `python scripts/build_eval_report.py ... --strict` → All regression gates passed
+  - GitHub Actions passed
+
+### Day26：LangChain RAG Backend Retriever
+
+- 提交 1：`c172523`，message：`feat(day26): implement langchain rag backend retrieval`。
+- 提交 2：`1e19e3c`，message：`test(day26): assert langchain rag backend marker`。
+- 修改/新增文件：
+  - `requirements-langchain.txt`
+  - `src/app/rag/langchain_backend.py`
+  - `tests/rag/test_langchain_backend_contract.py`
+- `requirements-langchain.txt` 当前包含：
+  - `langchain`
+  - `langchain-ollama`
+  - `langchain-chroma`
+- `RAG_BACKEND=langchain` 不再是 skeleton，已经能通过 `langchain_chroma.Chroma` 查询现有 Chroma KB。
+- LangChain backend 复用项目自身 `get_embedding_engine(settings)`，将其包装成 LangChain `Embeddings` 接口，保证查询 embedding 与入库 embedding 保持同一向量空间。
+- `LangChainRAGBackend.build_context()` 仍然输出统一的 `RAGContextResult`，其中 `extra` 包含：
+  - `backend=langchain`
+  - `vectorstore=langchain_chroma`
+- 新增 `tests/rag/test_langchain_backend_contract.py`：
+  - 验证 `RAG_BACKEND=langchain` 时 `/chat` 能真实命中 KB。
+  - 直接调用 backend，断言 `result.extra["backend"] == "langchain"`。
+  - 断言 `result.extra.get("vectorstore") == "langchain_chroma"`，防止误走 native backend。
+- 本地验收：
+  - `pytest tests/rag/test_langchain_backend_contract.py -q` → 2 passed
+  - `RAG_BACKEND=langchain pytest tests/chat/test_chat_rag_contract.py -q` → 2 passed
+  - `RAG_BACKEND=langchain pytest tests/stream/test_stream_rag_contract.py -q` → 2 passed
+  - `pytest -q` → 49 passed
+- 远程验收：GitHub Actions passed。
+- 注意：LangChain / Chroma 测试会修改 `kb/chroma/chroma.sqlite3`，这是运行时产物，不应提交；提交前执行 `git restore kb/chroma/chroma.sqlite3`。
+
 ---
 
 ## 3. 当前状态（可用验收）
@@ -198,16 +247,16 @@ Embedding：
 - v1 主链路仍在 master 稳定可用。
 - mock：`/health`、`/chat`、`/chat/stream`、`/demo`、`/prompt/compare`、`/prompts`、`/runs/*`、`/kb/*` 全部 OK。
 - ollama：可达时 `/chat`、`/chat/stream`、`/prompt/compare` OK；不可达时 `/chat`=502(detail 结构化)，`/chat/stream`=200 + `event:error`。
-- RAG：同步与流式均支持 `use_kb/kb_top_k`；citations 可追溯到 `doc_id/chunk_id/source/title`。
+- RAG：同步与流式均支持 `use_kb/kb_top_k`；citations 可追溯到 `doc_id/chunk_id/source/title`；Day25 后 `/chat` 与 `/chat/stream` 均通过统一 `RAGBackend` 构建上下文；Day26 后 `native/langchain` 双 backend 均可真实检索。
 - 评测：`python scripts/eval_qa_rag.py --qa eval/qa_rag_20.jsonl --provider ollama` 可跑完 QA20，并输出 summary。
 - 报告：`python scripts/build_eval_report.py ... --strict` 可生成 report，并在当前结果下通过 regression gates。
-- 测试：`pytest -q` 当前 47 passed（包含 Day24 backend factory 测试）。
-- CI：master 与 v2 分支均可通过 GitHub Actions。
+- 测试：`pytest -q` 当前 49 passed（包含 Day24 backend factory、Day25 route backend 接入、Day26 langchain backend contract 测试）。
+- CI：master 与 v2 分支均可通过 GitHub Actions；Day26 两个提交 `c172523` 与 `1e19e3c` 已通过。
 - Demo：`docs/demo_storyline_day22.md` 已经实跑验证，可作为面试演示脚本。
 
 ---
 
-## 4. Day19–Day24 重要经验（面试可讲）
+## 4. Day19–Day26 重要经验（面试可讲）
 
 Day19–Day22 是完整的 RAG 工程排障、评测与演示闭环：
 
@@ -237,6 +286,10 @@ Day23–Day24 是工程化收口与 v2 架构扩展入口：
   - LangChain 作为可选 backend 懒加载
   - 后续 `/chat` 与 `/chat/stream` 只依赖统一 `RAGBackend` 接口
 - 这样既保留手写 RAG 的可控性，也为后续 LangChain / Advanced RAG 扩展留出入口。
+- Day25 的核心不是新增 RAG 能力，而是把 route 层从 RAG 细节中解耦：`routes_chat.py` 不再直接关心 embedding、Chroma、Hit、rerank、context 拼接，而是统一调用 `get_rag_backend().build_context()`。
+- Day26 让 `RAG_BACKEND=langchain` 从 skeleton 变成真实 retriever，但没有替换项目 embedding 模型，而是把现有 `get_embedding_engine(settings)` 包装成 LangChain Embeddings，保证查询向量空间与入库向量空间一致。
+- Day26 的 backend marker 测试直接断言 `RAGContextResult.extra["backend"] == "langchain"`，避免只通过接口结果误判为走了 langchain backend。
+- 可选依赖测试使用 `pytest.importorskip` 保护 CI，避免基础 CI 被 LangChain 依赖污染。
 
 ---
 
@@ -270,33 +323,31 @@ backup_kb_reset/
 
 ---
 
-## 6. 下一步（Day25）
+## 6. 下一步（Day27）
 
-Day25 建议主题：**routes_chat.py 接入 RAGBackend，统一 /chat 与 /chat/stream 的 RAG 构建逻辑**。
+Day27 主题：**RAG Observability：latency breakdown + trace 增强**。
 
 建议任务：
 
-1. 确认起点：
-   - `git branch --show-current` → `v2-langchain-rag`
-   - `git status` clean
-   - `pytest -q` → 47 passed
-2. 只改 `/chat` 同步分支：
-   - 用 `get_rag_backend().build_context(query=query, top_k=top_k)` 替换手写 embedding + Chroma + rerank + build_context。
-   - 将 `RAGContextResult` 转回现有 `RagMetadata`，保持输出契约不变。
-   - 跑 `pytest tests/chat/test_chat_rag_contract.py -q` 和全量测试。
-3. 再改 `/chat/stream` 分支：
-   - 同样调用 `get_rag_backend().build_context()`。
-   - 将结果填回现有 `rag_dict`，保持 SSE meta/usage/error 形状不变。
-   - 跑 `pytest tests/stream/test_stream_rag_contract.py -q` 和全量测试。
-4. 回归：
+1. 在 native / langchain backend 中记录统一 timing schema：
+   - `embedding_ms`
+   - `retrieval_ms`
+   - `rerank_ms`
+   - `context_build_ms`
+   - `total_ms`
+2. 将 timing 与 backend marker 放入 `RAGContextResult.extra`。
+3. route 层透传到：
+   - `/chat` 的 `metadata.rag`
+   - `/chat/stream` 的 `meta.rag` / `usage.rag`
+4. 新增/更新 contract tests：
+   - timing 字段存在；
+   - timing 字段为非负整数；
+   - backend 字段能区分 `native/langchain`；
+   - stream usage.rag 中 timing 字段存在。
+5. 回归：
    - `pytest -q`
+   - `RAG_BACKEND=langchain pytest tests/chat/test_chat_rag_contract.py -q`
+   - `RAG_BACKEND=langchain pytest tests/stream/test_stream_rag_contract.py -q`
    - `python scripts/build_eval_report.py ... --strict`
-   - 可选：重跑 QA20（需要 Ollama）
-5. Day25 不做：
-   - LangChain retriever
-   - Query Rewrite
-   - Hybrid Search
-   - Reranker
-   - RAG Eval App
-   - Demo UI 修改
-   These should be Day26+ tasks.
+
+Day27 暂不做 Hybrid Search / Query Rewrite / Reranker。先补齐 RAG pipeline 可观测性。
