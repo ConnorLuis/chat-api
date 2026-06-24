@@ -38,6 +38,44 @@ def to_llm_citations(citations) -> list[Citation]:
         for c in citations
     ]
 
+RAG_TIMING_KEYS = [
+    "embedding_ms",
+    "retrieval_ms",
+    "rerank_ms",
+    "context_build_ms",
+    "total_ms",
+]
+
+def _safe_int(value, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def apply_rag_extra_to_meta(rag_meta: RagMetadata, extra: dict | None) -> None:
+    extra = extra or {}
+
+    rag_meta.backend = extra.get("backend")
+    rag_meta.vectorstore = extra.get("vectorstore")
+
+    for key in RAG_TIMING_KEYS:
+        setattr(rag_meta, key, _safe_int(extra.get(key), 0))
+
+
+def rag_extra_for_stream(extra: dict | None) -> dict:
+    extra = extra or {}
+
+    data = {
+        "backend": extra.get("backend"),
+        "vectorstore": extra.get("vectorstore"),
+    }
+
+    for key in RAG_TIMING_KEYS:
+        data[key] = _safe_int(extra.get(key), 0)
+
+    return data
+
 CHAT_OPENAPI_EXAMPLES = {
     "mock": {
         "summary": "mock example",
@@ -143,6 +181,7 @@ def chat(req: Request, body: Annotated[ChatRequest, Body(openapi_examples=CHAT_O
                 rag_meta.hits = rag_result.hits
                 rag_meta.citations = llm_citations
                 rag_meta.error = rag_result.error
+                apply_rag_extra_to_meta(rag_meta, rag_result.extra)
 
     except Exception as e:
         rag_error = str(e)
@@ -155,6 +194,7 @@ def chat(req: Request, body: Annotated[ChatRequest, Body(openapi_examples=CHAT_O
         rag_meta.hits = 0
         rag_meta.citations = []
         rag_meta.error = rag_error
+        rag_meta.backend = settings.RAG_BACKEND
     context_chars = len(context) if context else 0
     parts = []
     if system_text:
@@ -313,7 +353,7 @@ async def chat_stream(req: Request, body: Annotated[ChatRequest, Body(openapi_ex
         rag_error = None
         candidate_k = 0
 
-        # ✅ 统一形状：永远有 rag（use_kb=false 时 enabled=false + top_k=0）
+        # 统一形状：永远有 rag（use_kb=false 时 enabled=false + top_k=0）
         rag_dict = {
             "enabled": rag_enabled,
             "top_k": top_k if rag_enabled else 0,
@@ -321,6 +361,9 @@ async def chat_stream(req: Request, body: Annotated[ChatRequest, Body(openapi_ex
             "context_chars": 0,
             "candidate_k": 0,
             "error": None,
+            **rag_extra_for_stream({
+                "backend": settings.RAG_BACKEND if rag_enabled else None,
+            }),
         }
         try:
             if rag_enabled:
@@ -336,6 +379,9 @@ async def chat_stream(req: Request, body: Annotated[ChatRequest, Body(openapi_ex
                         "hits": 0,
                         "candidate_k": 0,
                         "error": None,
+                        **rag_extra_for_stream({
+                            "backend": settings.RAG_BACKEND,
+                        }),
                     })
                 else:
                     rag_backend = get_rag_backend()
@@ -356,6 +402,7 @@ async def chat_stream(req: Request, body: Annotated[ChatRequest, Body(openapi_ex
                         "hits": rag_result.hits,
                         "candidate_k": rag_result.candidate_k,
                         "error": rag_result.error,
+                        **rag_extra_for_stream(rag_result.extra),
                     })
         except Exception as e:
             rag_error = str(e)
@@ -369,6 +416,9 @@ async def chat_stream(req: Request, body: Annotated[ChatRequest, Body(openapi_ex
                 "candidate_k": candidate_k,
                 "hits": 0,
                 "error": rag_error,
+                **rag_extra_for_stream({
+                    "backend": settings.RAG_BACKEND,
+                }),
             })
 
         context_chars = len(context) if context else 0

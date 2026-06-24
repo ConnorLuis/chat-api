@@ -1,5 +1,21 @@
 import json
 
+RAG_TIMING_KEYS = [
+    "embedding_ms",
+    "retrieval_ms",
+    "rerank_ms",
+    "context_build_ms",
+    "total_ms",
+]
+
+
+def assert_rag_observability(rag: dict, backend: str = "native"):
+    assert rag["backend"] == backend
+
+    for key in RAG_TIMING_KEYS:
+        assert key in rag
+        assert isinstance(rag[key], int)
+        assert rag[key] >= 0
 
 def _parse_sse(text: str):
     events = []
@@ -55,6 +71,7 @@ def test_stream_rag_contract_ok(client, isolated_kb_env):
     assert "usage" in types
 
     meta = json.loads(events[0][1])
+    assert_rag_observability(meta["rag"], backend="native")
     assert meta["rag"]["enabled"] is True
     assert meta["rag"]["top_k"] == 3
     assert meta["rag"]["hits"] >= 1
@@ -67,6 +84,7 @@ def test_stream_rag_contract_ok(client, isolated_kb_env):
             break
 
     assert usage is not None
+    assert_rag_observability(usage["rag"], backend="native")
     assert usage["rag"]["enabled"] is True
     assert isinstance(usage["rag"]["citations"], list)
     assert len(usage["rag"]["citations"]) >= 1

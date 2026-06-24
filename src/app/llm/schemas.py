@@ -76,6 +76,15 @@ class RagMetadata(BaseModel):
     candidate_k: int = 0
     error: str | None = None
 
+    # RAG observability
+    backend: str | None = None
+    vectorstore: str | None = None
+    embedding_ms: int = 0
+    retrieval_ms: int = 0
+    rerank_ms: int = 0
+    context_build_ms: int = 0
+    total_ms: int = 0
+
 # 封装响应的元信息（引擎类型、模型名、响应耗时），作为 ChatResponse 的可选字段
 class ChatMetadata(BaseModel):
     provider: str
