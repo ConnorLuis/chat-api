@@ -78,5 +78,15 @@ def test_langchain_backend_build_context_exposes_backend_marker(client, isolated
     assert result.hits >= 1
     assert result.citations
     assert result.error is None
+    for key in [
+        "embedding_ms",
+        "retrieval_ms",
+        "rerank_ms",
+        "context_build_ms",
+        "total_ms",
+    ]:
+        assert key in result.extra
+        assert isinstance(result.extra[key], int)
+        assert result.extra[key] >= 0
     assert result.extra["backend"] == "langchain"
     assert result.extra.get("vectorstore") == "langchain_chroma"

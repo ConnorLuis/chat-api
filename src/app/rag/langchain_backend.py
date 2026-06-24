@@ -1,9 +1,15 @@
+import time
+
 from src.app.core.settings import settings
 from src.app.kb.embeddings import get_embedding_engine
 from src.app.kb.rag_context import build_rag_context, rerank_hits
 from src.app.kb.schemas import Hit
 from src.app.rag.base import RAGBackend
 from src.app.rag.schemas import RAGCitation, RAGContextResult
+
+
+def _ms(start: float) -> int:
+    return int((time.perf_counter() - start) * 1000)
 
 
 class LangChainRAGBackend(RAGBackend):
@@ -34,7 +40,20 @@ class LangChainRAGBackend(RAGBackend):
         )
 
     def build_context(self, query: str, top_k: int) -> RAGContextResult:
+        total_start = time.perf_counter()
+
+        timing = {
+            "backend": "langchain",
+            "vectorstore": "langchain_chroma",
+            "embedding_ms": 0,
+            "retrieval_ms": 0,
+            "rerank_ms": 0,
+            "context_build_ms": 0,
+            "total_ms": 0,
+        }
+
         if not query:
+            timing["total_ms"] = _ms(total_start)
             return RAGContextResult(
                 enabled=True,
                 top_k=top_k,
@@ -44,15 +63,17 @@ class LangChainRAGBackend(RAGBackend):
                 context_chars=0,
                 citations=[],
                 error=None,
-                extra={"backend": "langchain"},
+                extra=timing,
             )
 
         candidate_k = max(top_k, settings.KB_CANDIDATE_K)
 
+        t0 = time.perf_counter()
         results = self.vectorstore.similarity_search_with_score(
             query,
             k=candidate_k,
         )
+        timing["retrieval_ms"] = _ms(t0)
 
         hits: list[Hit] = []
         for idx, item in enumerate(results):
@@ -82,13 +103,17 @@ class LangChainRAGBackend(RAGBackend):
                 )
             )
 
+        t0 = time.perf_counter()
         hits = rerank_hits(query=query, hits=hits)
         hits = hits[:top_k]
+        timing["rerank_ms"] = _ms(t0)
 
+        t0 = time.perf_counter()
         context_text, citations = build_rag_context(
             hits=hits,
             max_chars=settings.KB_MAX_CONTEXT_CHARS,
         )
+        timing["context_build_ms"] = _ms(t0)
 
         rag_citations = [
             RAGCitation(
@@ -100,6 +125,8 @@ class LangChainRAGBackend(RAGBackend):
             for c in citations
         ]
 
+        timing["total_ms"] = _ms(total_start)
+
         return RAGContextResult(
             enabled=True,
             top_k=top_k,
@@ -109,8 +136,5 @@ class LangChainRAGBackend(RAGBackend):
             context_chars=len(context_text),
             citations=rag_citations,
             error=None,
-            extra={
-                "backend": "langchain",
-                "vectorstore": "langchain_chroma",
-            },
+            extra=timing,
         )
