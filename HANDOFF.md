@@ -1,4 +1,4 @@
-开始新对话前：**“继续 chat-api v2，从 Day27 开始（RAG Observability：latency breakdown + trace 增强），当前 Day26 已完成 LangChain RAG backend retriever，native/langchain 双 backend 均可通过契约测试。”**
+开始新对话前：**“继续 chat-api v2，从 Day28 开始（建议 Hybrid RAG：vector retrieval + lexical retrieval + fusion rerank），当前 Day27 已完成 RAG Observability：backend/timing 已透传到 /chat 与 /chat/stream，并有 native/langchain route 层测试保护。”**
 
 # HANDOFF（给新对话用，更新至 Day24）
 
@@ -52,7 +52,7 @@ Embedding：
 
 ---
 
-## 2. 已完成进度概览（Day1–Day26）
+## 2. 已完成进度概览（Day1–Day27）
 
 ### Day1–Day12：FastAPI Chat Service 基础能力
 
@@ -239,6 +239,60 @@ Embedding：
 - 远程验收：GitHub Actions passed。
 - 注意：LangChain / Chroma 测试会修改 `kb/chroma/chroma.sqlite3`，这是运行时产物，不应提交；提交前执行 `git restore kb/chroma/chroma.sqlite3`。
 
+
+### Day27：RAG Observability：latency breakdown + trace 增强
+
+- Day27 已闭环，分为三段：
+  - Day27-A：`feat(day27): add rag backend observability timing`
+  - Day27-B：`feat(day27): expose rag observability in chat responses`
+  - Day27-C：`test(day27): assert langchain route rag observability`
+- Day27-A：
+  - `NativeRAGBackend` 与 `LangChainRAGBackend` 写入统一 timing schema：
+    - `embedding_ms`
+    - `retrieval_ms`
+    - `rerank_ms`
+    - `context_build_ms`
+    - `total_ms`
+  - timing 与 backend marker 写入 `RAGContextResult.extra`。
+  - native extra：`backend=native`。
+  - langchain extra：`backend=langchain`、`vectorstore=langchain_chroma`。
+  - 新增/更新：
+    - `tests/rag/test_native_backend_observability.py`
+    - `tests/rag/test_langchain_backend_contract.py`
+- Day27-B：
+  - `RagMetadata` 新增：
+    - `backend`
+    - `vectorstore`
+    - `embedding_ms`
+    - `retrieval_ms`
+    - `rerank_ms`
+    - `context_build_ms`
+    - `total_ms`
+  - `/chat` 的 `metadata.rag` 透传 backend/timing。
+  - `/chat/stream` 的 `meta.rag`、`usage.rag`、`error.rag` 透传 backend/timing。
+  - 更新：
+    - `tests/chat/test_chat_rag_contract.py`
+    - `tests/stream/test_stream_rag_contract.py`
+- Day27-C：
+  - 新增 `tests/rag/test_langchain_route_observability.py`。
+  - 验证 `RAG_BACKEND=langchain` 时：
+    - `/chat metadata.rag.backend == "langchain"`
+    - `/chat/stream meta.rag.backend == "langchain"`
+    - `/chat/stream usage.rag.backend == "langchain"`
+    - `vectorstore == "langchain_chroma"`
+    - timing 字段存在且为非负整数。
+  - 该测试用 `pytest.importorskip` 保护 CI，避免 optional LangChain 依赖污染基础 CI。
+- 本地验收：
+  - `pytest tests/rag/test_native_backend_observability.py -q` → 1 passed
+  - `pytest tests/rag/test_langchain_backend_contract.py -q` → 2 passed
+  - `pytest tests/chat/test_chat_rag_contract.py -q` → 2 passed
+  - `pytest tests/stream/test_stream_rag_contract.py -q` → 2 passed
+  - `pytest tests/rag/test_langchain_route_observability.py -q` → 2 passed
+  - `pytest -q` → 52 passed（本地安装 LangChain optional deps 时）
+- 远程验收：
+  - Day27-A / Day27-B / Day27-C GitHub Actions 均已通过。
+- 注意：RAG / Chroma 测试可能修改 `kb/chroma/chroma.sqlite3`，这是运行时产物，不应提交。
+
 ---
 
 ## 3. 当前状态（可用验收）
@@ -250,13 +304,13 @@ Embedding：
 - RAG：同步与流式均支持 `use_kb/kb_top_k`；citations 可追溯到 `doc_id/chunk_id/source/title`；Day25 后 `/chat` 与 `/chat/stream` 均通过统一 `RAGBackend` 构建上下文；Day26 后 `native/langchain` 双 backend 均可真实检索。
 - 评测：`python scripts/eval_qa_rag.py --qa eval/qa_rag_20.jsonl --provider ollama` 可跑完 QA20，并输出 summary。
 - 报告：`python scripts/build_eval_report.py ... --strict` 可生成 report，并在当前结果下通过 regression gates。
-- 测试：`pytest -q` 当前 49 passed（包含 Day24 backend factory、Day25 route backend 接入、Day26 langchain backend contract 测试）。
+- 测试：`pytest -q` 当前 52 passed（包含 Day24 backend factory、Day25 route backend 接入、Day26 langchain backend contract 测试）。
 - CI：master 与 v2 分支均可通过 GitHub Actions；Day26 两个提交 `c172523` 与 `1e19e3c` 已通过。
 - Demo：`docs/demo_storyline_day22.md` 已经实跑验证，可作为面试演示脚本。
 
 ---
 
-## 4. Day19–Day26 重要经验（面试可讲）
+## 4. Day19–Day27 重要经验（面试可讲）
 
 Day19–Day22 是完整的 RAG 工程排障、评测与演示闭环：
 
@@ -323,9 +377,9 @@ backup_kb_reset/
 
 ---
 
-## 6. 下一步（Day27）
+## 6. 下一步（Day28）
 
-Day27 主题：**RAG Observability：latency breakdown + trace 增强**。
+Day28 建议主题：**Hybrid RAG：vector retrieval + lexical retrieval + fusion rerank**。
 
 建议任务：
 
@@ -350,4 +404,4 @@ Day27 主题：**RAG Observability：latency breakdown + trace 增强**。
    - `RAG_BACKEND=langchain pytest tests/stream/test_stream_rag_contract.py -q`
    - `python scripts/build_eval_report.py ... --strict`
 
-Day27 暂不做 Hybrid Search / Query Rewrite / Reranker。先补齐 RAG pipeline 可观测性。
+Day28 暂不建议同时做 Query Rewrite。先完成 Hybrid RAG 的轻量可控版本，再用 Day27 timing/observability 评估收益和成本。

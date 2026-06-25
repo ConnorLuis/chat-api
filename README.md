@@ -8,7 +8,7 @@
 * 全局中间件：`x-trace-id` + latency 日志
 * 可插拔 LLM 引擎：mock / ollama
 * RAG：KB 入库/检索、同步/流式上下文注入、citations 溯源
-* RAG backend abstraction：`RAG_BACKEND=native|langchain`；`/chat` 与 `/chat/stream` 已统一通过 backend 构建 RAG 上下文，LangChain backend 已支持真实检索
+* RAG backend abstraction：`RAG_BACKEND=native|langchain`；`/chat` 与 `/chat/stream` 已统一通过 backend 构建 RAG 上下文，LangChain backend 已支持真实检索，并暴露 RAG observability timing
 * KB 管理：文档列表、软删除 tombstone、Chroma 向量清理
 * RAG 评测：QA20 离线评测、answer/citation/effective_rag/latency 指标
 * pytest：基础回归 + SSE 契约测试 + 错误契约测试
@@ -1003,4 +1003,107 @@ pytest -q
 git restore kb/chroma/chroma.sqlite3
 ```
 
-Day27 将进入 RAG Observability：backend marker + latency breakdown + trace 增强。
+Day27 已完成 RAG Observability：backend marker + latency breakdown + trace 增强。
+
+---
+
+## RAG Observability (Day27 / v2)
+
+Day27 adds observability to the RAG pipeline without changing request fields.
+
+### Exposed fields
+
+RAG responses now include:
+
+```text
+backend
+vectorstore
+embedding_ms
+retrieval_ms
+rerank_ms
+context_build_ms
+total_ms
+```
+
+### Where fields appear
+
+`POST /chat` exposes them in:
+
+```text
+metadata.rag
+```
+
+`POST /chat/stream` exposes them in:
+
+```text
+meta.rag
+usage.rag
+error.rag
+```
+
+### Backend extra
+
+Native backend:
+
+```text
+extra = {
+  "backend": "native",
+  "embedding_ms": ...,
+  "retrieval_ms": ...,
+  "rerank_ms": ...,
+  "context_build_ms": ...,
+  "total_ms": ...
+}
+```
+
+LangChain backend:
+
+```text
+extra = {
+  "backend": "langchain",
+  "vectorstore": "langchain_chroma",
+  "embedding_ms": ...,
+  "retrieval_ms": ...,
+  "rerank_ms": ...,
+  "context_build_ms": ...,
+  "total_ms": ...
+}
+```
+
+For LangChain backend, embedding is currently included inside `similarity_search_with_score()`, so it is counted in `retrieval_ms`.
+
+### Tests
+
+Day27 adds / updates:
+
+```text
+tests/rag/test_native_backend_observability.py
+tests/rag/test_langchain_backend_contract.py
+tests/rag/test_langchain_route_observability.py
+tests/chat/test_chat_rag_contract.py
+tests/stream/test_stream_rag_contract.py
+```
+
+Local validation when LangChain optional deps are installed:
+
+```bash
+pytest -q
+# 52 passed
+```
+
+CI remains lightweight because LangChain-specific tests are protected with `pytest.importorskip(...)`.
+
+### Runtime artifact
+
+RAG / Chroma tests may modify:
+
+```text
+kb/chroma/chroma.sqlite3
+```
+
+Do not commit it:
+
+```bash
+git restore kb/chroma/chroma.sqlite3
+```
+
