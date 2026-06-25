@@ -85,6 +85,12 @@ class RagMetadata(BaseModel):
     context_build_ms: int = 0
     total_ms: int = 0
 
+    # Day28: Hybrid RAG observability
+    retrieval_mode: str | None = None
+    fusion: str | None = None
+    vector_weight: float = 0.0
+    lexical_weight: float = 0.0
+
 # 封装响应的元信息（引擎类型、模型名、响应耗时），作为 ChatResponse 的可选字段
 class ChatMetadata(BaseModel):
     provider: str

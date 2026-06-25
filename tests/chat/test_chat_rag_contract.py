@@ -15,6 +15,11 @@ def assert_rag_observability(rag: dict, backend: str = "native"):
         assert isinstance(rag[key], int)
         assert rag[key] >= 0
 
+    assert rag["retrieval_mode"] == "hybrid"
+    assert rag["fusion"] == "vector_lexical"
+    assert rag["vector_weight"] == 0.7
+    assert rag["lexical_weight"] == 0.3
+
 def test_chat_rag_contract(client, isolated_kb_env, monkeypatch):
 
     isolated_kb_env(collection_name="test_chat_rag")

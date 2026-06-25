@@ -26,6 +26,11 @@ def assert_langchain_rag_observability(rag: dict):
         assert isinstance(rag[key], int)
         assert rag[key] >= 0
 
+    assert rag["retrieval_mode"] == "hybrid"
+    assert rag["fusion"] == "vector_lexical"
+    assert rag["vector_weight"] == 0.7
+    assert rag["lexical_weight"] == 0.3
+
 
 def parse_sse_events(text: str) -> list[tuple[str, str]]:
     events = []

@@ -46,12 +46,27 @@ RAG_TIMING_KEYS = [
     "total_ms",
 ]
 
+RAG_FUSION_KEYS = [
+    "retrieval_mode",
+    "fusion",
+]
+
+RAG_WEIGHT_KEYS = [
+    "vector_weight",
+    "lexical_weight",
+]
+
 def _safe_int(value, default: int = 0) -> int:
     try:
         return int(value)
     except (TypeError, ValueError):
         return default
 
+def _safe_float(value, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 def apply_rag_extra_to_meta(rag_meta: RagMetadata, extra: dict | None) -> None:
     extra = extra or {}
@@ -61,6 +76,12 @@ def apply_rag_extra_to_meta(rag_meta: RagMetadata, extra: dict | None) -> None:
 
     for key in RAG_TIMING_KEYS:
         setattr(rag_meta, key, _safe_int(extra.get(key), 0))
+
+    for key in RAG_FUSION_KEYS:
+        setattr(rag_meta, key, extra.get(key))
+
+    for key in RAG_WEIGHT_KEYS:
+        setattr(rag_meta, key, _safe_float(extra.get(key), 0.0))
 
 
 def rag_extra_for_stream(extra: dict | None) -> dict:
@@ -73,6 +94,12 @@ def rag_extra_for_stream(extra: dict | None) -> dict:
 
     for key in RAG_TIMING_KEYS:
         data[key] = _safe_int(extra.get(key), 0)
+
+    for key in RAG_FUSION_KEYS:
+        data[key] = extra.get(key)
+
+    for key in RAG_WEIGHT_KEYS:
+        data[key] = _safe_float(extra.get(key), 0.0)
 
     return data
 
