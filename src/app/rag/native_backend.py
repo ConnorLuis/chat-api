@@ -3,10 +3,17 @@ import time
 from src.app.core.settings import settings
 from src.app.kb import chroma_store
 from src.app.kb.embeddings import get_embedding_engine
-from src.app.kb.rag_context import build_rag_context, rerank_hits
 from src.app.kb.schemas import Hit
 from src.app.rag.base import RAGBackend
 from src.app.rag.schemas import RAGCitation, RAGContextResult
+from src.app.kb.rag_context import (
+    FUSION_METHOD,
+    HYBRID_RETRIEVAL_MODE,
+    LEXICAL_WEIGHT,
+    VECTOR_WEIGHT,
+    build_rag_context,
+    rerank_hits,
+)
 
 
 def _ms(start: float) -> int:
@@ -19,6 +26,10 @@ class NativeRAGBackend(RAGBackend):
 
         timing = {
             "backend": "native",
+            "retrieval_mode": HYBRID_RETRIEVAL_MODE,
+            "fusion": FUSION_METHOD,
+            "vector_weight": VECTOR_WEIGHT,
+            "lexical_weight": LEXICAL_WEIGHT,
             "embedding_ms": 0,
             "retrieval_ms": 0,
             "rerank_ms": 0,

@@ -90,3 +90,7 @@ def test_langchain_backend_build_context_exposes_backend_marker(client, isolated
         assert result.extra[key] >= 0
     assert result.extra["backend"] == "langchain"
     assert result.extra.get("vectorstore") == "langchain_chroma"
+    assert result.extra["retrieval_mode"] == "hybrid"
+    assert result.extra["fusion"] == "vector_lexical"
+    assert result.extra["vector_weight"] == 0.7
+    assert result.extra["lexical_weight"] == 0.3

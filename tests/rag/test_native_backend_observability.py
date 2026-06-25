@@ -29,6 +29,10 @@ def test_native_backend_build_context_exposes_timing(client, isolated_kb_env, mo
     assert result.citations
     assert result.error is None
     assert result.extra["backend"] == "native"
+    assert result.extra["retrieval_mode"] == "hybrid"
+    assert result.extra["fusion"] == "vector_lexical"
+    assert result.extra["vector_weight"] == 0.7
+    assert result.extra["lexical_weight"] == 0.3
 
     for key in [
         "embedding_ms",
