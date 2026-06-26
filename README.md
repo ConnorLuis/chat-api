@@ -12,6 +12,7 @@
 * Hybrid RAG：vector retrieval + lexical scoring + fusion rerank，并在 `metadata.rag` / SSE `rag` 中暴露 retrieval_mode/fusion/weights
 * KB 管理：文档列表、软删除 tombstone、Chroma 向量清理
 * RAG 评测：QA20 离线评测、answer/citation/effective_rag/latency 指标
+* RAG eval workflow：`seed_kb.py` + `run_rag_eval_workflow.py`，支持可复现 seed/eval/report strict gate
 * pytest：基础回归 + SSE 契约测试 + 错误契约测试
 
 ---
@@ -1231,5 +1232,158 @@ Usually do not commit:
 ```text
 eval/results/rag_eval_20_day28_hybrid.jsonl
 eval/results/rag_eval_20_day28_hybrid_summary.json
+```
+
+---
+
+## KB Seed and RAG Eval Workflow (Day29 / v2)
+
+Day29 turns the manual Day28-C KB rebuild and QA20 evaluation steps into repeatable scripts.
+
+### Seed KB
+
+Script:
+
+```text
+scripts/seed_kb.py
+```
+
+Main capabilities:
+
+```text
+1. Select docs/kb_seed/01-11 by default
+2. Keep source as docs/kb_seed/<filename>.md
+3. Extract title from filename
+4. Support --dry-run
+5. Support --reset-runtime --yes
+6. Support --ingest through POST /kb/documents
+7. Write eval/kb_seed_manifest.jsonl
+```
+
+Dry run:
+
+```bash
+python scripts/seed_kb.py --dry-run
+```
+
+Reset runtime artifacts. Stop uvicorn before this step:
+
+```bash
+python scripts/seed_kb.py --reset-runtime --yes
+```
+
+After restarting uvicorn, ingest seed docs:
+
+```bash
+python scripts/seed_kb.py --ingest
+```
+
+### Run full QA20 workflow
+
+Script:
+
+```text
+scripts/run_rag_eval_workflow.py
+```
+
+The workflow performs:
+
+```text
+health check
+→ seed KB
+→ provider warmup
+→ run eval_qa_rag.py
+→ build_eval_report.py --strict
+→ print summary
+```
+
+Example:
+
+```bash
+python scripts/run_rag_eval_workflow.py \
+  --provider ollama \
+  --results eval/results/rag_eval_20_day29_workflow.jsonl \
+  --summary eval/results/rag_eval_20_day29_workflow_summary.json \
+  --report eval/reports/rag_eval_report_day29_workflow.md
+```
+
+Runtime reset is intentionally separated from eval. Stop uvicorn first:
+
+```bash
+python scripts/run_rag_eval_workflow.py --reset-runtime --yes
+```
+
+Then restart uvicorn and rerun the workflow without `--reset-runtime`.
+
+### Provider warmup
+
+Day29-C adds provider warmup before formal QA20 evaluation:
+
+```text
+POST /chat
+provider = ollama
+use_kb = false
+max_tokens = 16
+temperature = 0.0
+```
+
+This avoids Ollama cold-start / first-request latency spikes from polluting the 20-sample p95 gate.
+
+You can skip it explicitly:
+
+```bash
+python scripts/run_rag_eval_workflow.py --skip-warmup
+```
+
+### Day29 final QA20 result
+
+After seed workflow + warmup:
+
+```text
+total = 20
+success = 20
+failed = 0
+answer_hit_rate = 90.0%
+citation_hit_rate = 100.0%
+effective_rag_rate = 100.0%
+title_hit_rate = 95.0%
+avg_latency_ms = 1495
+p50_latency_ms = 1396
+p95_latency_ms = 2750
+```
+
+Strict report gate:
+
+```text
+All regression gates passed!
+```
+
+### Day29 tests
+
+Day29 adds:
+
+```text
+tests/scripts/test_seed_kb.py
+tests/scripts/test_run_rag_eval_workflow.py
+```
+
+Validation:
+
+```bash
+pytest -q
+# 63 passed
+```
+
+### Runtime artifact note
+
+Do not commit workflow outputs:
+
+```text
+eval/kb_seed_manifest.jsonl
+eval/results/
+eval/reports/
+kb/chroma/
+kb/docs/
+kb/docs.jsonl
 ```
 

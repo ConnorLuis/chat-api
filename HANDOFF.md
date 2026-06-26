@@ -1,6 +1,6 @@
-开始新对话前：**“继续 chat-api v2，从 Day29 开始（建议 KB seed / eval workflow 脚本化），当前 Day28 已完成 Hybrid RAG：vector retrieval + lexical scoring + fusion rerank，并通过 QA20 strict regression gate。”**
+开始新对话前：**“继续 chat-api v2，从 Day30 开始（建议 v2 收口：README/HANDOFF/system_design、最终验收命令、演示脚本与面试讲解稿），当前 Day29 已完成 KB seed / RAG eval workflow 脚本化，并通过 QA20 strict regression gate。”**
 
-# HANDOFF（给新对话用，更新至 Day28）
+# HANDOFF（给新对话用，更新至 Day29）
 
 ## 0. 环境与项目
 
@@ -52,7 +52,7 @@ Embedding：
 
 ---
 
-## 2. 已完成进度概览（Day1–Day28）
+## 2. 已完成进度概览（Day1–Day29）
 
 ### Day1–Day12：FastAPI Chat Service 基础能力
 
@@ -318,6 +318,53 @@ Embedding：
   - 最终 Day28 Hybrid QA20 strict gate：`answer_hit_rate=90.0%`、`citation_hit_rate=100.0%`、`effective_rag_rate=100.0%`、`title_hit_rate=95.0%`、`p95_latency_ms=5921`、`failed=0`、`All regression gates passed!`。
   - 注意：`p95_latency_ms=5921ms` 已接近 `6000ms` 门槛，后续不要无约束增加 rerank 复杂度。
 
+
+
+### Day29：KB seed / eval workflow 脚本化
+
+- Day29 已完成 KB seed 与 RAG eval workflow 脚本化，目标是把 Day28-C 暴露出的“live KB 状态影响 QA20 评测”的问题收敛成可复现流程。
+- Day29-A：`feat(day29): add kb seed workflow script`
+  - 新增：`scripts/seed_kb.py`、`tests/scripts/test_seed_kb.py`。
+  - `seed_kb.py` 默认筛选 `docs/kb_seed/01-11`，`source` 保持 `docs/kb_seed/<filename>.md`，`title` 统一从文件名提取。
+  - 支持 `--dry-run`、`--reset-runtime --yes`、`--ingest`。
+  - 支持输出 `eval/kb_seed_manifest.jsonl`，用于记录本次 seed 的 path/source/title/text_chars/doc_id/chunks。
+  - 本地验收：
+    - `pytest tests/scripts/test_seed_kb.py -q` → 4 passed
+    - `pytest -q` → 61 passed
+    - `python scripts/seed_kb.py --dry-run` → 成功筛选 11 个 seed 文档。
+- Day29-B：`feat(day29): add rag eval workflow runner`
+  - 新增：`scripts/run_rag_eval_workflow.py`、`tests/scripts/test_run_rag_eval_workflow.py`。
+  - workflow runner 编排：health check → seed KB → run QA20 eval → build strict report → print summary。
+  - `--reset-runtime --yes` 只执行 runtime reset 并退出，提示重启 uvicorn 后再 seed/eval，避免服务进程持有 Chroma 文件时直接删除造成状态不一致。
+  - 本地验收：
+    - `pytest tests/scripts/test_run_rag_eval_workflow.py -q` → 2 passed
+    - `pytest tests/scripts/test_seed_kb.py -q` → 4 passed
+    - `pytest -q` → 63 passed
+  - CI 已通过。
+- Day29-C：`fix(day29): warm up provider before rag eval workflow`
+  - 第一次 workflow 实跑时，seed/eval/report 全链路跑通，但 strict gate 因 `p95_latency_ms=6512` 失败。
+  - 当时质量指标均正常：`answer_hit_rate=90%`、`citation_hit_rate=100%`、`effective_rag_rate=100%`、`title_hit_rate=95%`、`failed=0`。
+  - 定位：QA20 只有 20 条样本，p95 对单个慢请求敏感；本地 Ollama 首次请求/冷启动会把尾延迟顶高。
+  - 修复：`run_rag_eval_workflow.py` 在正式 eval 前增加 provider warmup；warmup 调用 `/chat`，`use_kb=false`，`max_tokens=16`，`temperature=0.0`；支持 `--skip-warmup`。
+  - warmup 后最终结果：
+    - `total=20`
+    - `success=20`
+    - `failed=0`
+    - `answer_hit_rate=0.90`
+    - `citation_hit_rate=1.00`
+    - `effective_rag_rate=1.00`
+    - `title_hit_rate=0.95`
+    - `avg_latency_ms=1495`
+    - `p50_latency_ms=1396`
+    - `p95_latency_ms=2750`
+    - `All regression gates passed!`
+  - CI 已通过。
+- Day29 结论：
+  - QA20 不再依赖手工清理 KB 与手工入库命令；
+  - seed title/source metadata 稳定；
+  - workflow 能自动 seed/eval/report；
+  - provider warmup 显著降低 Ollama 首次请求导致的 p95 抖动。
+
 ---
 
 ## 3. 当前状态（可用验收）
@@ -327,15 +374,15 @@ Embedding：
 - mock：`/health`、`/chat`、`/chat/stream`、`/demo`、`/prompt/compare`、`/prompts`、`/runs/*`、`/kb/*` 全部 OK。
 - ollama：可达时 `/chat`、`/chat/stream`、`/prompt/compare` OK；不可达时 `/chat`=502(detail 结构化)，`/chat/stream`=200 + `event:error`。
 - RAG：同步与流式均支持 `use_kb/kb_top_k`；citations 可追溯到 `doc_id/chunk_id/source/title`；Day25 后 `/chat` 与 `/chat/stream` 均通过统一 `RAGBackend` 构建上下文；Day26 后 `native/langchain` 双 backend 均可真实检索；Day27 后暴露 backend/timing observability；Day28 后支持 Hybrid RAG fusion rerank。
-- 评测：`python scripts/eval_qa_rag.py --qa eval/qa_rag_20.jsonl --provider ollama` 可跑完 QA20，并输出 summary。
+- 评测：`python scripts/eval_qa_rag.py --qa eval/qa_rag_20.jsonl --provider ollama` 可跑完 QA20，并输出 summary；Day29 后推荐使用 `scripts/run_rag_eval_workflow.py` 一键 seed/eval/report。
 - 报告：`python scripts/build_eval_report.py ... --strict` 可生成 report，并在当前结果下通过 regression gates。
-- 测试：`pytest -q` 当前 57 passed（包含 Day24 backend factory、Day25 route backend 接入、Day26 langchain backend contract 测试）。
-- CI：master 与 v2 分支均可通过 GitHub Actions；Day26 两个提交 `c172523` 与 `1e19e3c` 已通过。
+- 测试：`pytest -q` 当前 63 passed（包含 Day24 backend factory、Day25 route backend 接入、Day26 langchain backend contract、Day27 observability、Day28 hybrid rerank、Day29 workflow tests）。
+- CI：master 与 v2 分支均可通过 GitHub Actions；Day26–Day29 相关提交均已通过。
 - Demo：`docs/demo_storyline_day22.md` 已经实跑验证，可作为面试演示脚本。
 
 ---
 
-## 4. Day19–Day28 重要经验（面试可讲）
+## 4. Day19–Day29 重要经验（面试可讲）
 
 Day19–Day22 是完整的 RAG 工程排障、评测与演示闭环：
 
@@ -372,6 +419,8 @@ Day23–Day24 是工程化收口与 v2 架构扩展入口：
 
 Day28 的核心不是简单增加规则，而是把检索排序升级为轻量 Hybrid RAG：保留 vector retrieval，引入 lexical scoring，再用 fusion rerank 融合排序，同时通过 route observability 暴露 `retrieval_mode/fusion/vector_weight/lexical_weight`。Day28-C 的排障经验也很关键：评测失败可能来自 live KB 状态或 citation scoring 口径，而不一定是检索算法本身。
 
+Day29 的价值是把评测链路从手工操作升级为可复现 workflow：`seed_kb.py` 固化 seed 文档选择、title/source metadata 与 manifest；`run_rag_eval_workflow.py` 串联 health check、seed、provider warmup、QA20 eval 和 strict report。Day29-C 还验证了本地 Ollama 的冷启动会显著影响 20 样本 p95，provider warmup 能把 p95 从 6512ms 降到 2750ms。
+
 ---
 
 ## 5. Git hygiene
@@ -404,18 +453,38 @@ backup_kb_reset/
 
 ---
 
-## 6. 下一步（Day29）
+## 6. 下一步（Day30）
 
-Day29 建议主题：**KB seed / eval workflow 脚本化**。
-
-Day28-C 暴露出一个关键工程问题：QA20 结果高度依赖 live KB 状态。手工清理 KB、手工入库、手工生成 title 很容易造成评测失败或 citation metadata 不一致。
+Day30 建议主题：**v2 收口：文档、演示、系统设计与面试讲解版总结**。
 
 建议任务：
 
-1. 新增 `scripts/seed_kb.py`：支持清理 `kb/chroma`、`kb/docs`、`kb/docs.jsonl`；支持只入库 `docs/kb_seed/01-11`；title 统一从文件名提取；source 保持 `docs/kb_seed/<filename>.md`；输出 seed manifest。
-2. 新增一键评测脚本或 Makefile 命令：seed KB → run QA20 eval → build eval report → strict gate fail 时返回非 0。
-3. 增加测试：title_from_filename、seed 文件筛选 01-11、eval citation normalized substring match。
-4. 保持 Day28 Hybrid RAG 逻辑不再扩张，避免 `p95_latency_ms` 超过 6000ms gate。
-
-Day29 暂不建议继续叠加 Query Rewrite / Cross-Encoder Reranker。当前更需要把可复现评测链路脚本化。
+1. 更新 `docs/system_design.md`：
+   - 补充 v2 RAGBackend abstraction；
+   - 补充 native/langchain backend；
+   - 补充 Day27 observability；
+   - 补充 Day28 Hybrid RAG；
+   - 补充 Day29 seed/eval workflow。
+2. 整理最终验收命令：
+   - `pytest -q`
+   - `python scripts/run_rag_eval_workflow.py --reset-runtime --yes`
+   - 重启 uvicorn
+   - `python scripts/run_rag_eval_workflow.py --provider ollama`
+3. 整理 demo / 面试演示链路：
+   - health；
+   - sync chat；
+   - stream SSE；
+   - RAG sync；
+   - Hybrid RAG metadata；
+   - Prompt Compare；
+   - Replay；
+   - eval workflow。
+4. 输出一版面试讲解稿：
+   - 项目背景；
+   - 系统架构；
+   - RAG pipeline；
+   - v2 扩展点；
+   - 工程排障案例；
+   - 评测与回归门槛。
+5. Day30 暂不建议继续加新功能，重点是把 v2 做成可展示、可讲解、可验收的阶段版本。
 
