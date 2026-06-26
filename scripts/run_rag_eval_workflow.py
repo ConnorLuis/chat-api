@@ -4,7 +4,7 @@ import subprocess
 import sys
 from pathlib import Path
 from urllib.error import URLError
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 
 DEFAULT_BASE_URL = "http://localhost:8000"
@@ -35,6 +35,42 @@ def check_server(base_url: str, timeout: int) -> None:
             f"server is not reachable at {base_url}. "
             f"Start uvicorn first, then rerun this workflow. Detail: {e}"
         ) from e
+
+def warmup_provider(base_url: str, provider: str, timeout: int) -> None:
+    url = base_url.rstrip("/") + "/chat"
+    payload = {
+        "provider": provider,
+        "messages": [{"role": "user", "content": "ping"}],
+        "use_kb": False,
+        "max_tokens": 16,
+        "temperature": 0.0,
+    }
+
+    data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    req = Request(
+        url,
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+
+    print()
+    print(f"Warm up provider: {provider}")
+
+    try:
+        with urlopen(req, timeout=timeout) as resp:
+            body = resp.read().decode("utf-8", errors="replace")
+            if resp.status != 200:
+                raise RuntimeError(
+                    f"POST {url} returned HTTP {resp.status}: {body[:300]}"
+                )
+    except URLError as e:
+        raise SystemExit(
+            f"provider warmup failed at {base_url}. "
+            f"Check provider={provider} and OLLAMA_BASE_URL. Detail: {e}"
+        ) from e
+
+    print("Warmup done.")
 
 
 def print_summary(summary_path: Path) -> None:
@@ -81,6 +117,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--temperature", type=float, default=0.1)
     parser.add_argument("--max-tokens", type=int, default=256)
     parser.add_argument("--timeout", type=int, default=60)
+    parser.add_argument(
+        "--skip-warmup",
+        action="store_true",
+        help="Skip provider warmup before eval.",
+    )
 
     parser.add_argument(
         "--reset-runtime",
@@ -146,6 +187,9 @@ def main() -> int:
             "--timeout",
             str(args.timeout),
         ])
+
+    if not args.skip_warmup:
+        warmup_provider(args.base_url, args.provider, timeout=args.timeout)
 
     run_cmd([
         sys.executable,
