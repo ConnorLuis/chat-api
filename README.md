@@ -9,6 +9,7 @@
 * 可插拔 LLM 引擎：mock / ollama
 * RAG：KB 入库/检索、同步/流式上下文注入、citations 溯源
 * RAG backend abstraction：`RAG_BACKEND=native|langchain`；`/chat` 与 `/chat/stream` 已统一通过 backend 构建 RAG 上下文，LangChain backend 已支持真实检索，并暴露 RAG observability timing
+* Hybrid RAG：vector retrieval + lexical scoring + fusion rerank，并在 `metadata.rag` / SSE `rag` 中暴露 retrieval_mode/fusion/weights
 * KB 管理：文档列表、软删除 tombstone、Chroma 向量清理
 * RAG 评测：QA20 离线评测、answer/citation/effective_rag/latency 指标
 * pytest：基础回归 + SSE 契约测试 + 错误契约测试
@@ -82,7 +83,7 @@ curl http://localhost:8000/health
 * `KB_CHROMA_DIR` (default: `${KB_DIR}/chroma`)
 * `KB_TOP_K` (default: `5`)
 * `KB_CANDIDATE_K` (default: `50`)：先召回更大候选池，再 rerank 截断到 `kb_top_k`
-* `RAG_BACKEND` (default: `native`, options: `native|langchain`)：Day24 新增 backend skeleton；Day25 接入 `/chat` 与 `/chat/stream`；Day26 已实现 LangChain Chroma retriever
+* `RAG_BACKEND` (default: `native`, options: `native|langchain`)：Day24 新增 backend skeleton；Day25 接入 `/chat` 与 `/chat/stream`；Day26 已实现 LangChain Chroma retriever；Day27 暴露 observability；Day28 使用 Hybrid fusion rerank
 * `EMBEDDING_PROVIDER` (default: `mock`, options: `mock|hf`)
 * `EMBEDDING_MODEL`：HF embedding 模型名或本地路径
 
@@ -1105,5 +1106,130 @@ Do not commit it:
 
 ```bash
 git restore kb/chroma/chroma.sqlite3
+```
+
+---
+
+## Hybrid RAG Fusion Rerank (Day28 / v2)
+
+Day28 upgrades the RAG ranking stage from vector-only rerank to lightweight Hybrid RAG:
+
+```text
+vector retrieval
+→ lexical scoring
+→ fusion rerank
+→ top_k context
+```
+
+The request contract is unchanged. Existing `/chat` and `/chat/stream` clients do not need to change request fields.
+
+### Fusion signals
+
+Hybrid rerank combines:
+
+```text
+1. vector score：semantic retrieval score from Chroma / LangChain Chroma
+2. lexical score：query token overlap, title/source/text match, exact phrase bonus
+3. query-aware rule bonus：the existing topic-specific rerank rules from Day19/Day20
+```
+
+Current fixed weights:
+
+```text
+retrieval_mode = "hybrid"
+fusion = "vector_lexical"
+vector_weight = 0.7
+lexical_weight = 0.3
+```
+
+### API observability
+
+`POST /chat` exposes Hybrid RAG fields in `metadata.rag`.
+
+`POST /chat/stream` exposes the same fields in `meta.rag` / `usage.rag` / `error.rag`.
+
+Fields:
+
+```text
+backend
+vectorstore
+retrieval_mode
+fusion
+vector_weight
+lexical_weight
+embedding_ms
+retrieval_ms
+rerank_ms
+context_build_ms
+total_ms
+```
+
+### Tests
+
+Day28 adds / updates:
+
+```text
+tests/kb/test_hybrid_rag_rerank.py
+tests/rag/test_native_backend_observability.py
+tests/rag/test_langchain_backend_contract.py
+tests/chat/test_chat_rag_contract.py
+tests/stream/test_stream_rag_contract.py
+tests/rag/test_langchain_route_observability.py
+```
+
+Local validation:
+
+```bash
+pytest -q
+# 57 passed
+```
+
+### Day28 QA20 result
+
+After rebuilding live KB from `docs/kb_seed/01-11` and running QA20:
+
+```text
+answer_hit_rate = 90.0%
+citation_hit_rate = 100.0%
+effective_rag_rate = 100.0%
+title_hit_rate = 95.0%
+avg_latency_ms = 1958
+p50_latency_ms = 1706
+p95_latency_ms = 5921
+failed = 0
+```
+
+Strict report gate:
+
+```bash
+python scripts/build_eval_report.py \
+  --results eval/results/rag_eval_20_day28_hybrid.jsonl \
+  --summary eval/results/rag_eval_20_day28_hybrid_summary.json \
+  --out eval/reports/rag_eval_report_day28_hybrid.md \
+  --strict
+# All regression gates passed!
+```
+
+### Day28 troubleshooting notes
+
+Day28-C exposed two important evaluation pitfalls:
+
+1. **Live KB state matters.** The first Day28 eval failed because the live KB still contained demo documents, so citations pointed to `source=demo` instead of `docs/kb_seed/*`.
+2. **Citation scoring should match evaluation intent.** QA20 uses source categories such as `kb_seed`, while runtime citations contain full paths such as `docs/kb_seed/07_KB Ingest & Search.md`. Day28 fixed `scripts/eval_qa_rag.py` to use normalized substring matching and title/source fallback, instead of brittle exact matching.
+
+### Runtime artifact note
+
+Do not commit runtime KB / eval outputs:
+
+```bash
+git restore kb/chroma kb/docs.jsonl kb/docs 2>/dev/null || true
+git restore eval/reports/rag_eval_report_day28_hybrid.md 2>/dev/null || true
+```
+
+Usually do not commit:
+
+```text
+eval/results/rag_eval_20_day28_hybrid.jsonl
+eval/results/rag_eval_20_day28_hybrid_summary.json
 ```
 

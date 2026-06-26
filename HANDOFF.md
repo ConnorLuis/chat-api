@@ -1,6 +1,6 @@
-开始新对话前：**“继续 chat-api v2，从 Day28 开始（建议 Hybrid RAG：vector retrieval + lexical retrieval + fusion rerank），当前 Day27 已完成 RAG Observability：backend/timing 已透传到 /chat 与 /chat/stream，并有 native/langchain route 层测试保护。”**
+开始新对话前：**“继续 chat-api v2，从 Day29 开始（建议 KB seed / eval workflow 脚本化），当前 Day28 已完成 Hybrid RAG：vector retrieval + lexical scoring + fusion rerank，并通过 QA20 strict regression gate。”**
 
-# HANDOFF（给新对话用，更新至 Day24）
+# HANDOFF（给新对话用，更新至 Day28）
 
 ## 0. 环境与项目
 
@@ -52,7 +52,7 @@ Embedding：
 
 ---
 
-## 2. 已完成进度概览（Day1–Day27）
+## 2. 已完成进度概览（Day1–Day28）
 
 ### Day1–Day12：FastAPI Chat Service 基础能力
 
@@ -293,6 +293,31 @@ Embedding：
   - Day27-A / Day27-B / Day27-C GitHub Actions 均已通过。
 - 注意：RAG / Chroma 测试可能修改 `kb/chroma/chroma.sqlite3`，这是运行时产物，不应提交。
 
+
+
+### Day28：Hybrid RAG：vector retrieval + lexical retrieval + fusion rerank
+
+- Day28 已完成 Hybrid RAG 路线，目标是在不改变 `/chat` 与 `/chat/stream` request contract 的前提下，把原有向量检索升级为：
+  - vector retrieval：保留 Chroma / LangChain Chroma 向量召回；
+  - lexical scoring：补充关键词、标题、source、exact phrase 等词面信号；
+  - fusion rerank：将 vector score、lexical score 与既有 query-aware rule bonus 融合排序。
+- Day28-A：`feat(day28): add hybrid rag fusion rerank`
+  - 修改：`src/app/kb/rag_context.py`、`src/app/rag/native_backend.py`、`src/app/rag/langchain_backend.py`、`tests/kb/test_hybrid_rag_rerank.py`、backend observability tests。
+  - 新增常量：`HYBRID_RETRIEVAL_MODE="hybrid"`、`FUSION_METHOD="vector_lexical"`、`VECTOR_WEIGHT=0.7`、`LEXICAL_WEIGHT=0.3`。
+  - `rerank_hits()` 从“vector score + rule bonus”升级为“vector score + lexical score + query-aware rule bonus”。
+  - native/langchain backend 的 `RAGContextResult.extra` 增加 `retrieval_mode/fusion/vector_weight/lexical_weight`。
+  - 本地验收：`pytest tests/kb/test_hybrid_rag_rerank.py -q` → 5 passed；`pytest -q` → 57 passed。
+- Day28-B：`feat(day28): expose hybrid rag fusion observability`
+  - `RagMetadata` 增加 Hybrid observability 字段：`retrieval_mode`、`fusion`、`vector_weight`、`lexical_weight`。
+  - `/chat metadata.rag` 与 `/chat/stream meta.rag / usage.rag / error.rag` 均暴露这些字段。
+  - 测试锁定 native 与 langchain route 层都能看到 `retrieval_mode == "hybrid"`、`fusion == "vector_lexical"`、`vector_weight == 0.7`、`lexical_weight == 0.3`。
+- Day28-C：`fix(day28): make rag eval citation matching robust`
+  - 第一次 Day28-C eval 失败：`answer_hit_rate=10%`、`citation_hit_rate=5%`。原因是 live KB 仍是 demo 数据，citations 指向 `source=demo` / `title=RAG Demo Note`，不是 QA20 对应的 `docs/kb_seed/01-11`。
+  - 重建 KB 为 `docs/kb_seed/01-11` 后：`answer_hit_rate=95%`，但 `citation_hit_rate=0%`、`title_hit_rate=0%`。原因是 `scripts/eval_qa_rag.py` 使用 exact match，而 QA20 的 `expected_sources=["kb_seed"]` 是来源类别标记，实际 `citation.source` 是 `docs/kb_seed/07_KB Ingest & Search.md` 这类完整路径；旧入库方式还可能把 `title` 写成 `Header`。
+  - 修复：citation source/title 使用 normalized substring match；title matching 支持 title/source fallback；重建 KB 时 title 从文件名提取，例如 `07_KB Ingest & Search.md` → `KB Ingest & Search`。
+  - 最终 Day28 Hybrid QA20 strict gate：`answer_hit_rate=90.0%`、`citation_hit_rate=100.0%`、`effective_rag_rate=100.0%`、`title_hit_rate=95.0%`、`p95_latency_ms=5921`、`failed=0`、`All regression gates passed!`。
+  - 注意：`p95_latency_ms=5921ms` 已接近 `6000ms` 门槛，后续不要无约束增加 rerank 复杂度。
+
 ---
 
 ## 3. 当前状态（可用验收）
@@ -301,16 +326,16 @@ Embedding：
 - v1 主链路仍在 master 稳定可用。
 - mock：`/health`、`/chat`、`/chat/stream`、`/demo`、`/prompt/compare`、`/prompts`、`/runs/*`、`/kb/*` 全部 OK。
 - ollama：可达时 `/chat`、`/chat/stream`、`/prompt/compare` OK；不可达时 `/chat`=502(detail 结构化)，`/chat/stream`=200 + `event:error`。
-- RAG：同步与流式均支持 `use_kb/kb_top_k`；citations 可追溯到 `doc_id/chunk_id/source/title`；Day25 后 `/chat` 与 `/chat/stream` 均通过统一 `RAGBackend` 构建上下文；Day26 后 `native/langchain` 双 backend 均可真实检索。
+- RAG：同步与流式均支持 `use_kb/kb_top_k`；citations 可追溯到 `doc_id/chunk_id/source/title`；Day25 后 `/chat` 与 `/chat/stream` 均通过统一 `RAGBackend` 构建上下文；Day26 后 `native/langchain` 双 backend 均可真实检索；Day27 后暴露 backend/timing observability；Day28 后支持 Hybrid RAG fusion rerank。
 - 评测：`python scripts/eval_qa_rag.py --qa eval/qa_rag_20.jsonl --provider ollama` 可跑完 QA20，并输出 summary。
 - 报告：`python scripts/build_eval_report.py ... --strict` 可生成 report，并在当前结果下通过 regression gates。
-- 测试：`pytest -q` 当前 52 passed（包含 Day24 backend factory、Day25 route backend 接入、Day26 langchain backend contract 测试）。
+- 测试：`pytest -q` 当前 57 passed（包含 Day24 backend factory、Day25 route backend 接入、Day26 langchain backend contract 测试）。
 - CI：master 与 v2 分支均可通过 GitHub Actions；Day26 两个提交 `c172523` 与 `1e19e3c` 已通过。
 - Demo：`docs/demo_storyline_day22.md` 已经实跑验证，可作为面试演示脚本。
 
 ---
 
-## 4. Day19–Day27 重要经验（面试可讲）
+## 4. Day19–Day28 重要经验（面试可讲）
 
 Day19–Day22 是完整的 RAG 工程排障、评测与演示闭环：
 
@@ -345,6 +370,8 @@ Day23–Day24 是工程化收口与 v2 架构扩展入口：
 - Day26 的 backend marker 测试直接断言 `RAGContextResult.extra["backend"] == "langchain"`，避免只通过接口结果误判为走了 langchain backend。
 - 可选依赖测试使用 `pytest.importorskip` 保护 CI，避免基础 CI 被 LangChain 依赖污染。
 
+Day28 的核心不是简单增加规则，而是把检索排序升级为轻量 Hybrid RAG：保留 vector retrieval，引入 lexical scoring，再用 fusion rerank 融合排序，同时通过 route observability 暴露 `retrieval_mode/fusion/vector_weight/lexical_weight`。Day28-C 的排障经验也很关键：评测失败可能来自 live KB 状态或 citation scoring 口径，而不一定是检索算法本身。
+
 ---
 
 ## 5. Git hygiene
@@ -377,31 +404,18 @@ backup_kb_reset/
 
 ---
 
-## 6. 下一步（Day28）
+## 6. 下一步（Day29）
 
-Day28 建议主题：**Hybrid RAG：vector retrieval + lexical retrieval + fusion rerank**。
+Day29 建议主题：**KB seed / eval workflow 脚本化**。
+
+Day28-C 暴露出一个关键工程问题：QA20 结果高度依赖 live KB 状态。手工清理 KB、手工入库、手工生成 title 很容易造成评测失败或 citation metadata 不一致。
 
 建议任务：
 
-1. 在 native / langchain backend 中记录统一 timing schema：
-   - `embedding_ms`
-   - `retrieval_ms`
-   - `rerank_ms`
-   - `context_build_ms`
-   - `total_ms`
-2. 将 timing 与 backend marker 放入 `RAGContextResult.extra`。
-3. route 层透传到：
-   - `/chat` 的 `metadata.rag`
-   - `/chat/stream` 的 `meta.rag` / `usage.rag`
-4. 新增/更新 contract tests：
-   - timing 字段存在；
-   - timing 字段为非负整数；
-   - backend 字段能区分 `native/langchain`；
-   - stream usage.rag 中 timing 字段存在。
-5. 回归：
-   - `pytest -q`
-   - `RAG_BACKEND=langchain pytest tests/chat/test_chat_rag_contract.py -q`
-   - `RAG_BACKEND=langchain pytest tests/stream/test_stream_rag_contract.py -q`
-   - `python scripts/build_eval_report.py ... --strict`
+1. 新增 `scripts/seed_kb.py`：支持清理 `kb/chroma`、`kb/docs`、`kb/docs.jsonl`；支持只入库 `docs/kb_seed/01-11`；title 统一从文件名提取；source 保持 `docs/kb_seed/<filename>.md`；输出 seed manifest。
+2. 新增一键评测脚本或 Makefile 命令：seed KB → run QA20 eval → build eval report → strict gate fail 时返回非 0。
+3. 增加测试：title_from_filename、seed 文件筛选 01-11、eval citation normalized substring match。
+4. 保持 Day28 Hybrid RAG 逻辑不再扩张，避免 `p95_latency_ms` 超过 6000ms gate。
 
-Day28 暂不建议同时做 Query Rewrite。先完成 Hybrid RAG 的轻量可控版本，再用 Day27 timing/observability 评估收益和成本。
+Day29 暂不建议继续叠加 Query Rewrite / Cross-Encoder Reranker。当前更需要把可复现评测链路脚本化。
+
