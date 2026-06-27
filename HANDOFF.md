@@ -1,6 +1,6 @@
-开始新对话前：**“继续 chat-api v2，从 Day30 开始（建议 v2 收口：README/HANDOFF/system_design、最终验收命令、演示脚本与面试讲解稿），当前 Day29 已完成 KB seed / RAG eval workflow 脚本化，并通过 QA20 strict regression gate。”**
+开始新对话前：**“chat-api v2 已完成并可归档。下一阶段请在‘Agent智能体开发计划’对话中开始第二个 Agent 项目；本项目当前分支 v2-langchain-rag 已完成 RAGBackend、LangChain backend、RAG observability、Hybrid RAG、seed/eval workflow、系统设计、演示手册与面试讲解稿收口。”**
 
-# HANDOFF（给新对话用，更新至 Day29）
+# HANDOFF（chat-api v2 归档版，更新至 Day30）
 
 ## 0. 环境与项目
 
@@ -52,7 +52,7 @@ Embedding：
 
 ---
 
-## 2. 已完成进度概览（Day1–Day29）
+## 2. 已完成进度概览（Day1–Day30）
 
 ### Day1–Day12：FastAPI Chat Service 基础能力
 
@@ -365,6 +365,91 @@ Embedding：
   - workflow 能自动 seed/eval/report；
   - provider warmup 显著降低 Ollama 首次请求导致的 p95 抖动。
 
+
+### Day30：v2 收口：系统设计、演示手册、面试讲解稿与最终归档
+
+- Day30 是 `chat-api v2` 的收口日，不新增后端业务功能，重点是把 v2 做成可展示、可讲解、可验收、可归档的阶段版本。
+- Day30-A：`docs(day30): complete system design document`
+  - 完成 `docs/system_design.md`，从原先的标题骨架补全为完整中文系统设计文档。
+  - 覆盖内容：
+    - 项目概览；
+    - 总体架构；
+    - `/chat` 同步请求链路；
+    - `/chat/stream` SSE 流式链路；
+    - RAG Pipeline；
+    - RAGBackend abstraction；
+    - native/langchain backend；
+    - RAG observability；
+    - Hybrid RAG；
+    - PromptHub / A/B Compare；
+    - Run Log / Replay；
+    - Error Handling；
+    - QA20 Evaluation / Regression Gates；
+    - Design Trade-offs；
+    - Current Boundaries and Future Work。
+  - 后续修正：将 5.2 之后残留英文段落统一改为中文，保留代码、接口名、字段名和文件名等工程标识。
+  - CI 已通过。
+- Day30-B：`docs(day30): add v2 demo guide`
+  - 新增 `docs/v2_demo_guide.md`。
+  - 定位：演示命令手册，不是架构说明。
+  - 演示链路：
+    - 环境准备；
+    - `/health`；
+    - `/chat` mock / ollama；
+    - `/chat/stream` SSE；
+    - reset + seed KB；
+    - RAG sync chat；
+    - Hybrid RAG metadata；
+    - RAG streaming；
+    - Prompt Compare；
+    - Run Replay；
+    - RAG Eval Workflow；
+    - Error Demo；
+    - 测试与 CI；
+    - runtime artifact 清理。
+  - 实跑确认：普通 `/chat` ollama 能正常返回，`rag.enabled=false` 是预期，因为该步没有开启 `use_kb=true`。
+  - CI 已通过。
+- Day30-C：`docs(day30): add interview talk track`
+  - 新增 `docs/interview_talk_track.md`。
+  - 定位：面试讲解稿，不是命令手册。
+  - 覆盖内容：
+    - 30 秒 / 1 分钟 / 3 分钟项目介绍；
+    - 为什么做这个项目；
+    - 系统架构讲法；
+    - `/chat` 与 `/chat/stream` 讲法；
+    - PromptHub / A/B Compare / Replay；
+    - RAG Pipeline；
+    - `candidate_k`；
+    - RAGBackend abstraction；
+    - native/langchain backend；
+    - RAG observability；
+    - Hybrid RAG；
+    - QA20 eval 和 strict gates；
+    - Day28 / Day29 真实排障案例；
+    - 设计取舍；
+    - 项目边界；
+    - 面试官常问问题；
+    - 2 分钟 / 5 分钟压缩讲稿；
+    - 简历 bullet 提炼。
+  - CI 已通过。
+- Day30-D：最终文档收口
+  - 更新 `README.md` 与 `HANDOFF.md`，把 v2 完结状态写清楚。
+  - 生成 `Day30.md` 作为本地学习记录。
+  - 提交 `README.md` 与 `HANDOFF.md` 后，`chat-api v2-langchain-rag` 阶段正式完结。
+- v2 最终验收：
+  - `pytest -q` → 63 passed；
+  - `run_rag_eval_workflow.py --provider ollama` strict gate 通过；
+  - 最新 QA20 结果：
+    - `answer_hit_rate=0.90`
+    - `citation_hit_rate=1.00`
+    - `effective_rag_rate=1.00`
+    - `title_hit_rate=0.95`
+    - `p95_latency_ms=2750`
+    - `failed=0`
+- 对话归档说明：
+  - 本对话可作为 `chat-api v2` 项目记录归档；
+  - 后续在“Agent智能体开发计划”对话中开始第二个 Agent 项目，避免当前长对话继续变慢。
+
 ---
 
 ## 3. 当前状态（可用验收）
@@ -373,16 +458,18 @@ Embedding：
 - v1 主链路仍在 master 稳定可用。
 - mock：`/health`、`/chat`、`/chat/stream`、`/demo`、`/prompt/compare`、`/prompts`、`/runs/*`、`/kb/*` 全部 OK。
 - ollama：可达时 `/chat`、`/chat/stream`、`/prompt/compare` OK；不可达时 `/chat`=502(detail 结构化)，`/chat/stream`=200 + `event:error`。
-- RAG：同步与流式均支持 `use_kb/kb_top_k`；citations 可追溯到 `doc_id/chunk_id/source/title`；Day25 后 `/chat` 与 `/chat/stream` 均通过统一 `RAGBackend` 构建上下文；Day26 后 `native/langchain` 双 backend 均可真实检索；Day27 后暴露 backend/timing observability；Day28 后支持 Hybrid RAG fusion rerank。
+- RAG：同步与流式均支持 `use_kb/kb_top_k`；citations 可追溯到 `doc_id/chunk_id/source/title`；Day25 后 `/chat` 与 `/chat/stream` 均通过统一 `RAGBackend` 构建上下文；Day26 后 `native/langchain` 双 backend 均可真实检索；Day27 后暴露 backend/timing observability；Day28 后支持 Hybrid RAG fusion rerank；Day29 后支持可复现 seed/eval/report workflow。
 - 评测：`python scripts/eval_qa_rag.py --qa eval/qa_rag_20.jsonl --provider ollama` 可跑完 QA20，并输出 summary；Day29 后推荐使用 `scripts/run_rag_eval_workflow.py` 一键 seed/eval/report。
 - 报告：`python scripts/build_eval_report.py ... --strict` 可生成 report，并在当前结果下通过 regression gates。
 - 测试：`pytest -q` 当前 63 passed（包含 Day24 backend factory、Day25 route backend 接入、Day26 langchain backend contract、Day27 observability、Day28 hybrid rerank、Day29 workflow tests）。
 - CI：master 与 v2 分支均可通过 GitHub Actions；Day26–Day29 相关提交均已通过。
-- Demo：`docs/demo_storyline_day22.md` 已经实跑验证，可作为面试演示脚本。
+- Demo：`docs/demo_storyline_day22.md` 已经实跑验证；Day30 新增 `docs/v2_demo_guide.md` 作为 v2 演示命令手册。
+- 文档：Day30 已完成 `docs/system_design.md`、`docs/v2_demo_guide.md`、`docs/interview_talk_track.md`，可用于系统设计讲解、能力演示与面试表达。
+- 项目状态：`chat-api v2-langchain-rag` 阶段正式完结，可归档。
 
 ---
 
-## 4. Day19–Day29 重要经验（面试可讲）
+## 4. Day19–Day30 重要经验（面试可讲）
 
 Day19–Day22 是完整的 RAG 工程排障、评测与演示闭环：
 
@@ -421,6 +508,8 @@ Day28 的核心不是简单增加规则，而是把检索排序升级为轻量 H
 
 Day29 的价值是把评测链路从手工操作升级为可复现 workflow：`seed_kb.py` 固化 seed 文档选择、title/source metadata 与 manifest；`run_rag_eval_workflow.py` 串联 health check、seed、provider warmup、QA20 eval 和 strict report。Day29-C 还验证了本地 Ollama 的冷启动会显著影响 20 样本 p95，provider warmup 能把 p95 从 6512ms 降到 2750ms。
 
+Day30 的价值是把 v2 阶段从“功能完成”整理为“可展示、可讲解、可验收、可归档”：补全中文系统设计文档，新增 v2 演示手册，新增面试讲解稿，并最终更新 README/HANDOFF。
+
 ---
 
 ## 5. Git hygiene
@@ -453,38 +542,19 @@ backup_kb_reset/
 
 ---
 
-## 6. 下一步（Day30）
+## 6. 归档与下一阶段
 
-Day30 建议主题：**v2 收口：文档、演示、系统设计与面试讲解版总结**。
+`chat-api v2-langchain-rag` 阶段已经正式完结。
 
-建议任务：
+最终建议保留本项目作为：
 
-1. 更新 `docs/system_design.md`：
-   - 补充 v2 RAGBackend abstraction；
-   - 补充 native/langchain backend；
-   - 补充 Day27 observability；
-   - 补充 Day28 Hybrid RAG；
-   - 补充 Day29 seed/eval workflow。
-2. 整理最终验收命令：
-   - `pytest -q`
-   - `python scripts/run_rag_eval_workflow.py --reset-runtime --yes`
-   - 重启 uvicorn
-   - `python scripts/run_rag_eval_workflow.py --provider ollama`
-3. 整理 demo / 面试演示链路：
-   - health；
-   - sync chat；
-   - stream SSE；
-   - RAG sync；
-   - Hybrid RAG metadata；
-   - Prompt Compare；
-   - Replay；
-   - eval workflow。
-4. 输出一版面试讲解稿：
-   - 项目背景；
-   - 系统架构；
-   - RAG pipeline；
-   - v2 扩展点；
-   - 工程排障案例；
-   - 评测与回归门槛。
-5. Day30 暂不建议继续加新功能，重点是把 v2 做成可展示、可讲解、可验收的阶段版本。
+1. LLM 应用工程项目；
+2. RAG 项目；
+3. FastAPI + Ollama 本地模型项目；
+4. PromptHub / A-B Compare / Replay 项目；
+5. RAGBackend / Hybrid RAG / Eval Workflow 项目；
+6. 面试展示项目。
+
+
+下一阶段请在“Agent智能体开发计划”中开始第二个 Agent 项目。
 

@@ -13,6 +13,7 @@
 * KB 管理：文档列表、软删除 tombstone、Chroma 向量清理
 * RAG 评测：QA20 离线评测、answer/citation/effective_rag/latency 指标
 * RAG eval workflow：`seed_kb.py` + `run_rag_eval_workflow.py`，支持可复现 seed/eval/report strict gate
+* v2 收口文档：`docs/system_design.md`、`docs/v2_demo_guide.md`、`docs/interview_talk_track.md`
 * pytest：基础回归 + SSE 契约测试 + 错误契约测试
 
 ---
@@ -321,11 +322,13 @@ Day23 修复了一个 CI import 问题：
 
 ---
 
-## System Design (Day23)
+## System Design and v2 Documentation
 
-系统设计说明：
+系统设计与 v2 收口文档：
 
 - `docs/system_design.md`
+- `docs/v2_demo_guide.md`
+- `docs/interview_talk_track.md`
 
 覆盖内容：
 
@@ -341,6 +344,8 @@ Day23 修复了一个 CI import 问题：
 - Current boundaries and future work
 
 Day23 完成后，chat-api v1 可以视为阶段性完结：服务可运行、demo 可演示、测试可回归、CI 可验证、系统设计可讲解。
+
+Day30 完成后，chat-api v2 可以视为阶段性完结：RAGBackend、LangChain backend、RAG observability、Hybrid RAG、seed/eval workflow、系统设计、演示手册与面试讲解稿均已收口。
 
 ## Troubleshooting
 
@@ -1386,4 +1391,117 @@ kb/chroma/
 kb/docs/
 kb/docs.jsonl
 ```
+---
+
+## v2 Closure (Day30)
+
+Day30 completes the `v2-langchain-rag` phase as a packaged, demonstrable, and interview-ready version.
+
+### What Day30 added
+
+Day30 is documentation and acceptance closure, not a new feature day.
+
+Added / completed docs:
+
+```text
+docs/system_design.md
+docs/v2_demo_guide.md
+docs/interview_talk_track.md
+```
+
+### Documentation roles
+
+```text
+docs/system_design.md
+  系统设计文档：讲架构、模块关系、RAG pipeline、设计取舍、当前边界与未来扩展。
+
+docs/v2_demo_guide.md
+  演示手册：按顺序跑 health、sync chat、stream、RAG、Hybrid metadata、Prompt Compare、Replay、eval workflow。
+
+docs/interview_talk_track.md
+  面试讲解稿：包含 30 秒 / 1 分钟 / 3 分钟项目介绍、RAG 讲法、真实排障案例、常见问答和简历 bullet。
+```
+
+### Final v2 accepted capabilities
+
+```text
+FastAPI service
+mock / ollama provider
+sync /chat
+SSE /chat/stream
+PromptHub
+Prompt A/B Compare
+Run Log / Replay
+KB ingest / search / delete
+RAG sync / stream
+candidate_k + query-aware rerank
+RAGBackend abstraction
+native / langchain backend
+RAG observability timing
+Hybrid RAG fusion rerank
+QA20 RAG eval
+Strict regression gates
+KB seed workflow
+RAG eval workflow
+Provider warmup for local Ollama eval
+GitHub Actions CI
+System design document
+Demo guide
+Interview talk track
+```
+
+### Final validation commands
+
+Run tests:
+
+```bash
+pytest -q
+# 63 passed
+```
+
+Run reproducible local RAG acceptance workflow:
+
+```bash
+# Stop uvicorn first
+python scripts/run_rag_eval_workflow.py --reset-runtime --yes
+
+# Restart uvicorn
+WIN_IP=$(grep -m 1 nameserver /etc/resolv.conf | awk '{print $2}')
+export OLLAMA_BASE_URL="http://$WIN_IP:11434"
+python -m uvicorn src.app.main:app --reload --port 8000
+
+# In another terminal
+python scripts/run_rag_eval_workflow.py --provider ollama
+```
+
+Expected strict gate:
+
+```text
+answer_hit_rate >= 0.90
+citation_hit_rate >= 0.95
+effective_rag_rate >= 0.95
+title_hit_rate >= 0.85
+p95_latency_ms <= 6000
+failed_count == 0
+```
+
+Latest validated result:
+
+```text
+total = 20
+success = 20
+failed = 0
+answer_hit_rate = 0.90
+citation_hit_rate = 1.00
+effective_rag_rate = 1.00
+title_hit_rate = 0.95
+avg_latency_ms = 1495
+p50_latency_ms = 1396
+p95_latency_ms = 2750
+All regression gates passed!
+```
+
+### Closure note
+
+`chat-api` v2 is now complete as a phase deliverable. The next project can start from the Agent development track while this project remains available as an LLM application engineering and RAG portfolio project.
 
