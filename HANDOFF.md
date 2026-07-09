@@ -1,12 +1,13 @@
-开始新对话前：**“chat-api v2 已完成并可归档。下一阶段请在‘Agent智能体开发计划’对话中开始第二个 Agent 项目；本项目当前分支 v2-langchain-rag 已完成 RAGBackend、LangChain backend、RAG observability、Hybrid RAG、seed/eval workflow、系统设计、演示手册与面试讲解稿收口。”**
+开始新对话前：**“chat-api v2-langchain-rag 已归档完成。当前准备在新分支 v2-langchain-rag-plus 上升级为 Production-ready LLM Chat Gateway；本阶段不要重复 agent-api 的 Agentic RAG / GraphRAG / Multi-Agent / MCP，而要聚焦多 Provider、OpenAI-compatible API、会话管理、SSE、Token usage、成本、鉴权、限流、缓存、fallback、部署与压测。”**
 
-# HANDOFF（chat-api v2 归档版，更新至 Day30）
+# HANDOFF（chat-api v2-plus 升级起点，基于 Day30 归档版）
 
 ## 0. 环境与项目
 
 - 环境：WSL2 Ubuntu + conda env=`chatapi` (Python 3.10)
 - 项目：`~/projects/chat-api`（GitHub: ConnorLuis/chat-api）
-- 当前 v2 分支：`v2-langchain-rag`
+- 已完成 v2 分支：`v2-langchain-rag`
+- 当前计划升级分支：`v2-langchain-rag-plus`
 - v1 稳定分支：`master`
 - Ollama：安装在 Windows；模型 `qwen2.5:7b` 已 pull
 - WSL 访问 Windows Ollama：
@@ -19,6 +20,187 @@ export OLLAMA_BASE_URL="http://$WIN_IP:11434"
 如果做 Error Demo 时临时改成 `http://127.0.0.1:1`，演示结束后要恢复上面的 Windows 网关地址并重启 uvicorn。
 
 ---
+
+---
+
+## v2-plus Upgrade Direction（Production-ready LLM Chat Gateway）
+
+当前 `chat-api v2-langchain-rag` 已完成并可归档。下一步建议从该分支新开：
+
+```text
+v2-langchain-rag-plus
+```
+
+该分支的目标不是继续做 Agent，而是升级为：
+
+```text
+Production-ready LLM Chat Gateway / 多模型统一接入与流式对话后端系统
+```
+
+### 与 agent-api 的边界
+
+`agent-api` 已经覆盖：
+
+```text
+Agentic RAG
+GraphRAG
+Multi-Agent
+MCP Integration Layer
+```
+
+所以 `chat-api` 后续不要重复：
+
+```text
+复杂 Agent Graph
+GraphRAG
+Multi-Agent Supervisor
+MCP 平台化
+agent-api 风格的 Agent 编排系统
+```
+
+两个项目的定位应保持互补：
+
+```text
+agent-api:
+  复杂 Agent / RAG / GraphRAG / Multi-Agent / MCP 平台型项目。
+
+chat-api:
+  生产级 LLM Chat Gateway / Chat Backend 工程项目。
+```
+
+### v2-plus 核心能力目标
+
+```text
+多 Provider 接入
+OpenAI-compatible /v1/chat/completions
+SSE 流式输出
+会话管理
+消息持久化
+上下文窗口截断
+Token usage 统计
+成本估算
+API Key 鉴权
+限流与 token quota
+Prompt cache
+Provider fallback / retry / timeout
+结构化日志
+trace_id 请求追踪
+health / readiness
+Docker / docker-compose 部署
+测试与 CI
+压测记录
+API 文档
+前端可接入
+```
+
+### Chat-Day 路线
+
+```text
+Chat-Day1:
+  新建 v2-langchain-rag-plus 分支，更新 README / HANDOFF，生成本地 LLM_GATEWAY_ROADMAP.md，锁定项目定位。
+
+Chat-Day2:
+  Provider 抽象升级，统一 OpenAI / Ollama / Mock。
+
+Chat-Day3:
+  OpenAI-compatible /v1/chat/completions API。
+
+Chat-Day4:
+  标准 SSE streaming，支持 metadata / delta / usage / final / done / error。
+
+Chat-Day5:
+  Conversation / Message 数据库表。
+
+Chat-Day6:
+  多会话历史管理与上下文窗口截断。
+
+Chat-Day7:
+  Token usage 统计。
+
+Chat-Day8:
+  Cost estimation 与 usage summary API。
+
+Chat-Day9:
+  API Key 鉴权。
+
+Chat-Day10:
+  Rate limit / token quota。
+
+Chat-Day11:
+  Prompt cache。
+
+Chat-Day12:
+  Provider fallback / retry / timeout。
+
+Chat-Day13:
+  Dockerfile + docker-compose。
+
+Chat-Day14:
+  health / readiness / metrics。
+
+Chat-Day15:
+  pytest + CI 全量补齐。
+
+Chat-Day16:
+  压测与性能记录。
+
+Chat-Day17:
+  README / HANDOFF / 面试材料整理。
+
+Optional Chat-Day18-Day20:
+  简单 Web UI、云部署、项目总结和简历 bullet 打磨。
+```
+
+### Chat-Day1 当前状态
+
+```text
+Runtime code changed: no
+Current pytest status: pytest -q green
+LLM_GATEWAY_ROADMAP.md policy: local-only, do not commit
+Next milestone: Chat-Day2 Provider abstraction upgrade
+```
+
+### 本地路线图文件策略
+
+详细路线图文件：
+
+```text
+LLM_GATEWAY_ROADMAP.md
+```
+
+该文件只用于本地规划和学习，不进入 git。提交时只提交：
+
+```text
+README.md
+HANDOFF.md
+```
+
+不要提交：
+
+```text
+LLM_GATEWAY_ROADMAP.md
+```
+
+### Chat-Day2 预告
+
+Chat-Day2 应该开始动代码：
+
+```text
+1. 梳理当前 LLMEngine / mock / ollama 调用逻辑。
+2. 设计 ChatProvider 抽象。
+3. 保留 MockProvider 用于 CI。
+4. 保留 OllamaProvider 用于本地模型。
+5. 新增 OpenAIProvider 边界。
+6. 新增 ProviderFactory。
+7. 支持请求级 provider/model override。
+8. 保持现有 /chat 和 /chat/stream 行为兼容。
+```
+
+---
+
+## v2-langchain-rag Archive Below
+
+以下内容保留为 `chat-api v2-langchain-rag` Day1-Day30 归档记录。
 
 ## 1. 关键环境变量
 
@@ -542,19 +724,85 @@ backup_kb_reset/
 
 ---
 
-## 6. 归档与下一阶段
+## 6. v2-plus 当前升级方向
 
-`chat-api v2-langchain-rag` 阶段已经正式完结。
+`chat-api v2-langchain-rag` 阶段已经正式完结，并作为 RAG / LangChain / Hybrid RAG / Eval Workflow 项目基线保留。
 
-最终建议保留本项目作为：
+当前新的工作方向不是切到 Agent 项目，而是在新分支继续升级：
 
-1. LLM 应用工程项目；
-2. RAG 项目；
-3. FastAPI + Ollama 本地模型项目；
-4. PromptHub / A-B Compare / Replay 项目；
-5. RAGBackend / Hybrid RAG / Eval Workflow 项目；
-6. 面试展示项目。
+```text
+v2-langchain-rag-plus
+```
 
+目标定位：
 
-下一阶段请在“Agent智能体开发计划”中开始第二个 Agent 项目。
+```text
+Production-ready LLM Chat Gateway / 多模型统一接入与流式对话后端系统
+```
+
+该分支后续不要重复 `agent-api` 已经完成的能力：
+
+```text
+复杂 Agent Graph
+Agentic RAG
+GraphRAG
+Multi-Agent Supervisor
+MCP 平台化
+agent-api 风格 Agent 编排系统
+```
+
+`chat-api v2-langchain-rag-plus` 应聚焦生产级 LLM Chat Backend 工程能力：
+
+```text
+多 Provider 接入
+OpenAI-compatible /v1/chat/completions
+SSE 流式输出
+会话管理
+消息持久化
+上下文窗口截断
+Token usage 统计
+成本估算
+API Key 鉴权
+限流与 token quota
+Prompt cache
+Provider fallback / retry / timeout
+结构化日志
+trace_id 请求追踪
+health / readiness
+Docker / docker-compose 部署
+测试与 CI
+压测记录
+API 文档
+前端可接入
+```
+
+### Chat-Day1 当前状态
+
+```text
+Runtime code changed: no
+Current pytest status: pytest -q green
+LLM_GATEWAY_ROADMAP.md policy: local-only, do not commit
+Committed files for Chat-Day1: README.md and HANDOFF.md only
+```
+
+### Next Work
+
+推荐下一步：
+
+```text
+Chat-Day2: Provider abstraction upgrade
+```
+
+Chat-Day2 应完成：
+
+```text
+1. 梳理当前 LLMEngine / mock / ollama 调用逻辑。
+2. 设计 ChatProvider 抽象。
+3. 保留 MockProvider 用于 deterministic tests / CI。
+4. 保留 OllamaProvider 用于本地模型。
+5. 新增 OpenAIProvider 边界。
+6. 新增 ProviderFactory。
+7. 支持请求级 provider/model override。
+8. 保持现有 /chat 与 /chat/stream 行为兼容。
+```
 

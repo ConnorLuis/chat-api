@@ -1,5 +1,100 @@
 # chat-api
 
+<!-- LLM_GATEWAY_PLUS_START -->
+## v2-plus Upgrade Positioning
+
+`chat-api` 当前从已完成的 `v2-langchain-rag` 阶段进入新的升级分支：
+
+```text
+v2-langchain-rag-plus
+```
+
+新分支目标不是继续扩展 Agent / GraphRAG / Multi-Agent / MCP，而是将 `chat-api` 升级为：
+
+```text
+Production-ready LLM Chat Gateway / 多模型统一接入与流式对话后端系统
+```
+
+### 项目边界
+
+`agent-api` 已经覆盖复杂 Agent 系统能力：
+
+```text
+Agentic RAG
+GraphRAG
+Multi-Agent
+MCP Integration Layer
+```
+
+因此 `chat-api` 后续不重复做：
+
+```text
+复杂 Agent Graph
+GraphRAG
+Multi-Agent Supervisor
+MCP 平台化
+agent-api 风格的 Agent 编排系统
+```
+
+### v2-plus 目标能力
+
+`chat-api` 后续重点建设生产级 LLM Chat Backend 能力：
+
+```text
+多 Provider 接入
+OpenAI-compatible /v1/chat/completions
+SSE 流式输出
+会话管理
+消息持久化
+上下文窗口截断
+Token usage 统计
+成本估算
+API Key 鉴权
+限流与 token quota
+Prompt cache
+Provider fallback / retry / timeout
+结构化日志
+trace_id 请求追踪
+health / readiness
+Docker / docker-compose 部署
+测试与 CI
+压测记录
+API 文档
+前端可接入
+```
+
+### 当前分支策略
+
+```text
+基础分支:
+  v2-langchain-rag
+
+升级分支:
+  v2-langchain-rag-plus
+
+Chat-Day1:
+  只更新 README / HANDOFF 和本地路线图，不修改运行时代码。
+
+本地路线图:
+  LLM_GATEWAY_ROADMAP.md
+
+路线图 git 策略:
+  local-only，不进入 git。
+```
+
+### 下一步
+
+```text
+Chat-Day2:
+  Provider abstraction upgrade.
+
+目标:
+  设计 ChatProvider 抽象层，统一 OpenAI / Ollama / Mock Provider，
+  支持请求级 provider/model override，并保持现有 /chat 行为兼容。
+```
+<!-- LLM_GATEWAY_PLUS_END -->
+
+
 一个最小可用的 FastAPI 聊天服务（工程化训练用），支持：
 
 * `GET /health`：健康检查
@@ -1501,7 +1596,52 @@ p95_latency_ms = 2750
 All regression gates passed!
 ```
 
-### Closure note
+### v2-plus Upgrade Note
 
-`chat-api` v2 is now complete as a phase deliverable. The next project can start from the Agent development track while this project remains available as an LLM application engineering and RAG portfolio project.
+`chat-api v2-langchain-rag` 已经作为阶段版本完成并保留为 RAG / LangChain / Hybrid RAG / Eval Workflow 项目基线。
+
+当前新的升级方向是在 `v2-langchain-rag-plus` 分支上继续推进：
+
+```text
+Production-ready LLM Chat Gateway / 多模型统一接入与流式对话后端系统
+```
+
+下一阶段不再切到新的 Agent 项目，也不重复 `agent-api` 已经完成的 Agentic RAG / GraphRAG / Multi-Agent / MCP 平台能力。
+
+`chat-api v2-langchain-rag-plus` 后续重点：
+
+```text
+多 Provider 接入
+OpenAI-compatible /v1/chat/completions
+标准 SSE streaming
+会话管理
+消息持久化
+上下文窗口截断
+Token usage 统计
+成本估算
+API Key 鉴权
+限流与 token quota
+Prompt cache
+Provider fallback / retry / timeout
+Docker / docker-compose
+health / readiness / metrics
+压测与性能记录
+README / HANDOFF / 面试材料整理
+```
+
+当前 Chat-Day1 状态：
+
+```text
+Runtime code changed: no
+pytest -q: green
+LLM_GATEWAY_ROADMAP.md: local-only, do not commit
+Next milestone: Chat-Day2 Provider abstraction upgrade
+```
+
+Chat-Day2 目标：
+
+```text
+设计 ChatProvider 抽象层，统一 OpenAI / Ollama / Mock Provider，
+支持请求级 provider/model override，并保持现有 /chat 与 /chat/stream 行为兼容。
+```
 
