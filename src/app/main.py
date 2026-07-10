@@ -6,6 +6,9 @@ from src.app.api.prompts.routes_prompts import router as prompts_router
 from src.app.api.prompt.routes_prompt import router as prompt_router
 from src.app.api.runs.routes_runs import router as run_router
 from src.app.api.kb.routes_kb import router as kb_router
+from src.app.api.openai_compat import (
+    router as openai_compat_router,
+)
 from src.app.core.logging import install_logging_middleware, setup_logging
 
 # # 项目启动时初始化日志
@@ -34,3 +37,4 @@ app.include_router(prompts_router)
 app.include_router(prompt_router)
 app.include_router(run_router)
 app.include_router(kb_router)
+app.include_router(openai_compat_router)

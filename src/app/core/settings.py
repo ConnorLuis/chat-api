@@ -42,6 +42,14 @@ class Settings:
     def OPENAI_TIMEOUT_S(self) -> float:
         return float(getenv("OPENAI_TIMEOUT_S", "60"))
 
+    @property
+    def OPENAI_COMPAT_DEFAULT_PROVIDER(self) -> str:
+        """OpenAI-compatible API 未指定 provider 时使用的后端。"""
+        return getenv(
+            "OPENAI_COMPAT_DEFAULT_PROVIDER",
+            "mock",
+        ).strip().lower()
+
     # 提示词模板的地址
     @property
     def PROMPTS_DIR(self) -> str:

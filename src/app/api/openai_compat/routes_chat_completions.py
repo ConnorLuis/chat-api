@@ -1,0 +1,238 @@
+from __future__ import annotations
+
+import time
+from uuid import uuid4
+
+from fastapi import APIRouter
+from fastapi.responses import JSONResponse
+
+from src.app.core.settings import settings
+from src.app.llm.providers import (
+    ChatProviderError,
+    ProviderChatResponse,
+    ProviderUsage,
+    UnsupportedProviderError,
+    build_provider_request,
+    get_chat_provider,
+)
+
+from .errors import openai_error_response
+from .route import OpenAICompatRoute
+from .schemas import (
+    OpenAIAssistantMessage,
+    OpenAIChatCompletionChoice,
+    OpenAIChatCompletionRequest,
+    OpenAIChatCompletionResponse,
+    OpenAICompletionUsage,
+    OpenAIErrorResponse,
+)
+
+
+router = APIRouter(
+    prefix="/v1",
+    tags=["OpenAI Compatibility"],
+    route_class=OpenAICompatRoute,
+)
+
+
+def _completion_id() -> str:
+    return f"chatcmpl-{uuid4().hex}"
+
+
+def _map_usage(
+    usage: ProviderUsage | None,
+) -> OpenAICompletionUsage | None:
+    if usage is None:
+        return None
+
+    prompt_tokens = usage.prompt_tokens
+    completion_tokens = usage.completion_tokens
+    total_tokens = usage.total_tokens
+
+    if (
+        total_tokens is None
+        and prompt_tokens is not None
+        and completion_tokens is not None
+    ):
+        total_tokens = (
+            prompt_tokens
+            + completion_tokens
+        )
+
+    # 不使用零值伪造未知 token 数量。
+    if (
+        prompt_tokens is None
+        or completion_tokens is None
+        or total_tokens is None
+    ):
+        return None
+
+    return OpenAICompletionUsage(
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=total_tokens,
+    )
+
+
+def _build_response(
+    provider_response: ProviderChatResponse,
+    *,
+    requested_model: str,
+) -> OpenAIChatCompletionResponse:
+    return OpenAIChatCompletionResponse(
+        id=_completion_id(),
+        created=int(time.time()),
+        model=(
+            provider_response.model
+            or requested_model
+        ),
+        choices=[
+            OpenAIChatCompletionChoice(
+                index=0,
+                message=OpenAIAssistantMessage(
+                    content=provider_response.content,
+                ),
+                finish_reason=(
+                    provider_response.finish_reason
+                    or "stop"
+                ),
+                logprobs=None,
+            )
+        ],
+        usage=_map_usage(provider_response.usage),
+    )
+
+
+def _completion_json_response(
+    response: OpenAIChatCompletionResponse,
+) -> JSONResponse:
+    """序列化非流式 Chat Completion。
+
+    未知 usage 继续省略，但 OpenAI-compatible choice 中的
+    logprobs 字段应显式保留为 null。
+    """
+
+    payload = response.model_dump(
+        exclude_none=True,
+    )
+
+    for choice in payload.get("choices", []):
+        choice["logprobs"] = None
+
+    return JSONResponse(
+        status_code=200,
+        content=payload,
+    )
+
+
+@router.post(
+    "/chat/completions",
+    response_model=OpenAIChatCompletionResponse,
+    response_model_exclude_none=True,
+    summary="Create chat completion",
+    description=(
+        "OpenAI-compatible non-streaming Chat Completions "
+        "endpoint. Streaming is introduced in Chat-Day4."
+    ),
+    responses={
+        400: {
+            "model": OpenAIErrorResponse,
+            "description": "Invalid or unsupported request.",
+        },
+        500: {
+            "model": OpenAIErrorResponse,
+            "description": "Gateway configuration error.",
+        },
+        502: {
+            "model": OpenAIErrorResponse,
+            "description": "Downstream provider error.",
+        },
+    },
+)
+def create_chat_completion(
+    body: OpenAIChatCompletionRequest,
+):
+    if body.stream:
+        return openai_error_response(
+            status_code=400,
+            message=(
+                "Streaming is not available on "
+                "/v1/chat/completions yet. "
+                "Use stream=false; OpenAI-compatible "
+                "streaming is scheduled for Chat-Day4."
+            ),
+            error_type="invalid_request_error",
+            param="stream",
+            code="streaming_not_supported_yet",
+        )
+
+    if body.n != 1:
+        return openai_error_response(
+            status_code=400,
+            message="Only n=1 is currently supported.",
+            error_type="invalid_request_error",
+            param="n",
+            code="unsupported_value",
+        )
+
+    provider_name = (
+        body.provider
+        or settings.OPENAI_COMPAT_DEFAULT_PROVIDER
+    )
+
+    try:
+        provider = get_chat_provider(provider_name)
+    except UnsupportedProviderError as exc:
+        # 请求 provider 已由 Schema 约束，因此这里通常代表
+        # OPENAI_COMPAT_DEFAULT_PROVIDER 服务端配置错误。
+        return openai_error_response(
+            status_code=500,
+            message=str(exc),
+            error_type="server_error",
+            code="invalid_gateway_configuration",
+        )
+
+    provider_request = build_provider_request(
+        body.messages,
+        model=body.model,
+        temperature=(
+            body.temperature
+            if body.temperature is not None
+            else 1.0
+        ),
+        top_p=(
+            body.top_p
+            if body.top_p is not None
+            else 1.0
+        ),
+        max_tokens=body.resolved_max_tokens(),
+    )
+
+    try:
+        provider_response = provider.chat(
+            provider_request
+        )
+    except ChatProviderError as exc:
+        return openai_error_response(
+            status_code=502,
+            message=str(exc),
+            error_type="api_error",
+            code="provider_error",
+        )
+    except Exception as exc:
+        return openai_error_response(
+            status_code=502,
+            message=(
+                f"{provider.name} provider failed: "
+                f"{exc}"
+            ),
+            error_type="api_error",
+            code="provider_error",
+        )
+
+    completion = _build_response(
+        provider_response,
+        requested_model=body.model,
+    )
+
+    return _completion_json_response(completion)
