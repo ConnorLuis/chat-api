@@ -25,6 +25,23 @@ class Settings:
     def OLLAMA_TIMEOUT_S(self) -> float:
         return float(getenv("OLLAMA_TIMEOUT_S", "60"))
 
+    # OpenAI / OpenAI-compatible Provider 配置
+    @property
+    def OPENAI_API_KEY(self) -> str:
+        return getenv("OPENAI_API_KEY", "")
+
+    @property
+    def OPENAI_BASE_URL(self) -> str:
+        return getenv("OPENAI_BASE_URL", "")
+
+    @property
+    def OPENAI_MODEL(self) -> str:
+        return getenv("OPENAI_MODEL", "")
+
+    @property
+    def OPENAI_TIMEOUT_S(self) -> float:
+        return float(getenv("OPENAI_TIMEOUT_S", "60"))
+
     # 提示词模板的地址
     @property
     def PROMPTS_DIR(self) -> str:
