@@ -3,13 +3,13 @@
 <!-- LLM_GATEWAY_PLUS_START -->
 ## v2-plus Upgrade Positioning
 
-`chat-api` 当前从已完成的 `v2-langchain-rag` 阶段进入新的升级分支：
+`chat-api` 已从完成的 `v2-langchain-rag` 基线进入升级分支：
 
 ```text
 v2-langchain-rag-plus
 ```
 
-新分支目标不是继续扩展 Agent / GraphRAG / Multi-Agent / MCP，而是将 `chat-api` 升级为：
+当前定位：
 
 ```text
 Production-ready LLM Chat Gateway / 多模型统一接入与流式对话后端系统
@@ -17,7 +17,7 @@ Production-ready LLM Chat Gateway / 多模型统一接入与流式对话后端�
 
 ### 项目边界
 
-`agent-api` 已经覆盖复杂 Agent 系统能力：
+`agent-api` 已覆盖复杂 Agent 系统能力：
 
 ```text
 Agentic RAG
@@ -26,19 +26,9 @@ Multi-Agent
 MCP Integration Layer
 ```
 
-因此 `chat-api` 后续不重复做：
-
-```text
-复杂 Agent Graph
-GraphRAG
-Multi-Agent Supervisor
-MCP 平台化
-agent-api 风格的 Agent 编排系统
-```
+因此 `chat-api` 后续不重复建设复杂 Agent Graph、GraphRAG、Multi-Agent Supervisor、MCP 平台化或 `agent-api` 风格的 Agent 编排系统，而是聚焦生产级 LLM Chat Backend 工程能力。
 
 ### v2-plus 目标能力
-
-`chat-api` 后续重点建设生产级 LLM Chat Backend 能力：
 
 ```text
 多 Provider 接入
@@ -63,34 +53,30 @@ API 文档
 前端可接入
 ```
 
-### 当前分支策略
+### 当前进度
 
 ```text
-基础分支:
-  v2-langchain-rag
-
-升级分支:
-  v2-langchain-rag-plus
-
 Chat-Day1:
-  只更新 README / HANDOFF 和本地路线图，不修改运行时代码。
+  完成分支创建、项目定位、README/HANDOFF 更新、本地路线图和 anti-drift 规则。
 
-本地路线图:
-  LLM_GATEWAY_ROADMAP.md
+Chat-Day2:
+  完成 ChatProvider 抽象、Mock/Ollama/OpenAI Provider、ProviderFactory、
+  请求级 provider/model override，以及 /chat、/chat/stream、/prompt/compare 主链路迁移。
 
-路线图 git 策略:
-  local-only，不进入 git。
+Current validation:
+  pytest -q -> 80 passed
+  GitHub Actions CI -> green
+
+Local-only roadmap:
+  LLM_GATEWAY_ROADMAP.md，不进入 git。
 ```
 
 ### 下一步
 
 ```text
-Chat-Day2:
-  Provider abstraction upgrade.
-
-目标:
-  设计 ChatProvider 抽象层，统一 OpenAI / Ollama / Mock Provider，
-  支持请求级 provider/model override，并保持现有 /chat 行为兼容。
+Chat-Day3:
+  实现 OpenAI-compatible /v1/chat/completions API，
+  在不破坏现有 /chat 与 /chat/stream 契约的前提下增加标准兼容入口。
 ```
 <!-- LLM_GATEWAY_PLUS_END -->
 
@@ -98,10 +84,12 @@ Chat-Day2:
 一个最小可用的 FastAPI 聊天服务（工程化训练用），支持：
 
 * `GET /health`：健康检查
-* `POST /chat`：同步聊天（`provider=mock|ollama`），返回 `metadata`
-* `POST /chat/stream`：SSE 流式聊天（`provider=mock|ollama`），事件：`meta/token/usage/done/error`
+* `POST /chat`：同步聊天（`provider=mock|ollama|openai`），支持请求级 `model` override，返回 `metadata`
+* `POST /chat/stream`：SSE 流式聊天（`provider=mock|ollama|openai`），事件：`meta/token/usage/done/error`
+* `POST /prompt/compare`：通过统一 Provider 层执行 Prompt A/B Compare
 * 全局中间件：`x-trace-id` + latency 日志
-* 可插拔 LLM 引擎：mock / ollama
+* 统一 ChatProvider：MockProvider / OllamaProvider / OpenAIProvider
+* ProviderFactory：屏蔽不同模型服务调用差异，OpenAI SDK 按需懒加载
 * RAG：KB 入库/检索、同步/流式上下文注入、citations 溯源
 * RAG backend abstraction：`RAG_BACKEND=native|langchain`；`/chat` 与 `/chat/stream` 已统一通过 backend 构建 RAG 上下文，LangChain backend 已支持真实检索，并暴露 RAG observability timing
 * Hybrid RAG：vector retrieval + lexical scoring + fusion rerank，并在 `metadata.rag` / SSE `rag` 中暴露 retrieval_mode/fusion/weights
@@ -155,6 +143,22 @@ langchain-chroma
 
 主 `requirements.txt` 不包含 LangChain，避免 CI 和基础测试被可选依赖污染。
 
+### Optional: OpenAI Provider dependencies (Chat-Day2)
+
+OpenAI / OpenAI-compatible Provider 使用可选依赖：
+
+```bash
+python -m pip install -r requirements-openai.txt
+```
+
+当前可选依赖文件：
+
+```text
+requirements-openai.txt
+```
+
+`openai` SDK 在 `OpenAIProvider` 真正执行请求时才懒加载，因此基础 CI、MockProvider 和 OllamaProvider 不依赖 OpenAI SDK。
+
 ### 2) Run server
 
 ```bash
@@ -175,6 +179,10 @@ curl http://localhost:8000/health
 * `OLLAMA_BASE_URL` (default: `http://127.0.0.1:11434`)
 * `OLLAMA_MODEL` (default: `qwen2.5:7b`)
 * `OLLAMA_TIMEOUT_S` (default: `60`)
+* `OPENAI_API_KEY`：OpenAI / OpenAI-compatible Provider API key
+* `OPENAI_BASE_URL`：可选 OpenAI-compatible endpoint
+* `OPENAI_MODEL`：OpenAI Provider 默认模型；请求体 `model` 优先级更高
+* `OPENAI_TIMEOUT_S` (default: `60`)
 * `RUN_LOG_PATH` (default: `runs/prompt_runs.jsonl`)
 * `KB_DIR` (default: `kb`)
 * `KB_CHROMA_DIR` (default: `${KB_DIR}/chroma`)
@@ -195,6 +203,60 @@ export OLLAMA_BASE_URL="http://$WIN_IP:11434"
 
 ---
 
+## Multi-Provider Architecture (Chat-Day2)
+
+Chat-Day2 将原有 `LLMEngine` 字符串返回接口升级为统一 Provider 层：
+
+```text
+HTTP API / Prompt Compare
+        ↓
+build_provider_request()
+        ↓
+ProviderFactory
+        ↓
+ChatProvider Protocol
+  ├── MockProvider
+  ├── OllamaProvider
+  └── OpenAIProvider
+```
+
+Provider 内部统一结构：
+
+```text
+ProviderMessage
+ProviderChatRequest
+ProviderChatResponse
+ProviderChatChunk
+ProviderUsage
+```
+
+主调用链：
+
+```text
+POST /chat
+  → get_chat_provider()
+  → provider.chat()
+
+POST /chat/stream
+  → get_chat_provider()
+  → provider.stream()
+
+POST /prompt/compare
+  → get_chat_provider()
+  → provider.chat()
+```
+
+设计约束：
+
+- API 层 `ChatRequest` 与 Provider 内部请求模型分离，RAG、PromptHub、session 等业务字段不下沉到 Provider。
+- `model` 采用请求级覆盖；为空时使用 Provider 默认模型，仍无法解析时返回 `"unknown"` 或明确配置错误。
+- MockProvider 无网络依赖，用于 deterministic tests 和 CI。
+- OllamaProvider 继续使用现有 `/api/generate` 协议，避免在 Provider 重构时同时改变模型协议。
+- OpenAIProvider 支持 OpenAI / OpenAI-compatible endpoint，SDK 懒加载，缺少 API key 时沿用现有 502 错误契约。
+- 旧 `src/app/llm/engines/` 暂时保留为历史兼容代码；当前聊天业务入口已迁移到 `src/app/llm/providers/`。
+
+---
+
 ## API: Sync Chat
 
 ### Sync chat (mock)
@@ -202,7 +264,7 @@ export OLLAMA_BASE_URL="http://$WIN_IP:11434"
 ```bash
 curl -s -X POST http://localhost:8000/chat \
   -H "Content-Type: application/json" \
-  -d '{"provider":"mock","messages":[{"role":"user","content":"hi"}]}' | cat
+  -d '{"provider":"mock","model":"mock-request-model","messages":[{"role":"user","content":"hi"}]}' | cat
 ```
 
 Example response（稳定契约字段）：
@@ -214,7 +276,7 @@ Example response（稳定契约字段）：
   "answer": "...",
   "metadata": {
     "provider": "mock",
-    "model": "unknown",
+    "model": "mock-request-model",
     "latency_ms": 0
   }
 }
@@ -233,8 +295,29 @@ ollama pull qwen2.5:7b
 ```bash
 curl -s -X POST http://localhost:8000/chat \
   -H "Content-Type: application/json" \
-  -d '{"provider":"ollama","messages":[{"role":"user","content":"一句话解释RAG"}],"max_tokens":128}' | cat
+  -d '{"provider":"ollama","model":"qwen2.5:7b","messages":[{"role":"user","content":"一句话解释RAG"}],"max_tokens":128}' | cat
 ```
+
+### Sync chat (OpenAI / OpenAI-compatible)
+
+安装可选依赖并设置配置：
+
+```bash
+python -m pip install -r requirements-openai.txt
+export OPENAI_API_KEY="..."
+export OPENAI_MODEL="your-model-name"
+# 可选：export OPENAI_BASE_URL="https://your-compatible-endpoint/v1"
+```
+
+调用：
+
+```bash
+curl -s -X POST http://localhost:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{"provider":"openai","model":"your-model-name","messages":[{"role":"user","content":"Hello"}],"max_tokens":128}' | cat
+```
+
+没有配置 `OPENAI_API_KEY` 时，请求会进入 OpenAIProvider，并通过现有同步错误契约返回 HTTP 502，而不是在 schema 层返回 422。
 
 ---
 
@@ -380,6 +463,16 @@ data: <string-or-json>
 
 ```bash
 pytest -q
+# 80 passed (Chat-Day2)
+```
+
+Chat-Day2 新增/覆盖的测试范围：
+
+```text
+tests/providers/
+tests/chat/test_chat_provider_compatibility.py
+tests/stream/test_stream_provider_compatibility.py
+tests/prompt/test_prompt_compare_provider_compatibility.py
 ```
 
 ---
@@ -406,7 +499,7 @@ pytest -q
 
 ### CI dependency note
 
-`sentence-transformers / torch / transformers` 没有放进默认 `requirements.txt`。  
+`sentence-transformers / torch / transformers` 没有放进默认 `requirements.txt`。
 原因是 CI 测试使用 `EMBEDDING_PROVIDER=mock`，不需要真实 HF embedding 依赖。
 
 Day23 修复了一个 CI import 问题：
@@ -483,7 +576,7 @@ Demo 现在支持 **Stop** 按钮中断流式请求（使用 `AbortController` +
 
 ## Prompt Compare (Day14)
 
-新增接口：`POST /prompt/compare`  
+新增接口：`POST /prompt/compare`
 同一输入套用两套 Prompt（A/B），返回并列结果与对比指标，并将两条运行记录写入 run log（JSONL）用于回放。
 
 ### Example
@@ -508,7 +601,7 @@ curl -s -X POST http://localhost:8000/prompt/compare   -H "Content-Type: applica
 
 ### Run log (JSONL)
 
-默认日志：`runs/prompt_runs.jsonl`  
+默认日志：`runs/prompt_runs.jsonl`
 compare 每次写两条（A/B），字段包含：
 - `compare_group_id`、`variant`、`mode=compare`
 - `trace_id`、`provider/model`
@@ -585,7 +678,7 @@ curl -s http://localhost:8000/runs/compare/<compare_group_id> | cat
 
 ### RUN_LOG_PATH（测试/调试）
 
-默认写入：`runs/prompt_runs.jsonl`  
+默认写入：`runs/prompt_runs.jsonl`
 你可以通过环境变量覆盖：
 
 ```bash
@@ -1596,52 +1689,59 @@ p95_latency_ms = 2750
 All regression gates passed!
 ```
 
-### v2-plus Upgrade Note
+### v2-plus Current Status (Chat-Day2 completed)
 
-`chat-api v2-langchain-rag` 已经作为阶段版本完成并保留为 RAG / LangChain / Hybrid RAG / Eval Workflow 项目基线。
-
-当前新的升级方向是在 `v2-langchain-rag-plus` 分支上继续推进：
+`chat-api v2-langchain-rag` 继续作为 RAG / LangChain / Hybrid RAG / Eval Workflow 项目基线保留；当前开发分支为：
 
 ```text
-Production-ready LLM Chat Gateway / 多模型统一接入与流式对话后端系统
+v2-langchain-rag-plus
 ```
 
-下一阶段不再切到新的 Agent 项目，也不重复 `agent-api` 已经完成的 Agentic RAG / GraphRAG / Multi-Agent / MCP 平台能力。
-
-`chat-api v2-langchain-rag-plus` 后续重点：
+Chat-Day2 已完成：
 
 ```text
-多 Provider 接入
-OpenAI-compatible /v1/chat/completions
-标准 SSE streaming
-会话管理
-消息持久化
-上下文窗口截断
-Token usage 统计
-成本估算
-API Key 鉴权
-限流与 token quota
-Prompt cache
-Provider fallback / retry / timeout
-Docker / docker-compose
-health / readiness / metrics
-压测与性能记录
-README / HANDOFF / 面试材料整理
+ChatProvider Protocol
+ProviderMessage / ProviderChatRequest / ProviderChatResponse
+ProviderChatChunk / ProviderUsage
+MockProvider
+OllamaProvider
+OpenAIProvider boundary
+ProviderFactory
+OpenAI optional dependency lazy loading
+request-level provider/model override
+/chat route migration
+/chat/stream route migration
+/prompt/compare route migration
+legacy API / SSE / RAG / error contract compatibility
 ```
 
-当前 Chat-Day1 状态：
+最终验收：
 
 ```text
-Runtime code changed: no
-pytest -q: green
-LLM_GATEWAY_ROADMAP.md: local-only, do not commit
-Next milestone: Chat-Day2 Provider abstraction upgrade
+pytest -q -> 80 passed
+GitHub Actions CI -> green
 ```
 
-Chat-Day2 目标：
+关键兼容性结果：
 
 ```text
-设计 ChatProvider 抽象层，统一 OpenAI / Ollama / Mock Provider，
-支持请求级 provider/model override，并保持现有 /chat 与 /chat/stream 行为兼容。
+/chat:
+  Mock/Ollama/OpenAI Provider 均通过统一 ProviderFactory 进入主链路。
+
+/chat/stream:
+  保持 meta → token* → usage → done；失败仍通过 event:error 传递。
+
+/prompt/compare:
+  A/B 两个 variant 均通过统一 Provider 层执行。
+
+OpenAI boundary:
+  无 API key 时返回结构化 502；基础 CI 不安装、不调用真实 OpenAI。
 ```
 
+下一里程碑：
+
+```text
+Chat-Day3: OpenAI-compatible /v1/chat/completions API
+```
+
+Chat-Day3 不应删除或破坏现有 `/chat`、`/chat/stream`、RAG、PromptHub、Compare、Replay 契约，而应新增独立的 OpenAI-compatible adapter / schema / route。

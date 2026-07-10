@@ -1,14 +1,17 @@
-开始新对话前：**“chat-api v2-langchain-rag 已归档完成。当前准备在新分支 v2-langchain-rag-plus 上升级为 Production-ready LLM Chat Gateway；本阶段不要重复 agent-api 的 Agentic RAG / GraphRAG / Multi-Agent / MCP，而要聚焦多 Provider、OpenAI-compatible API、会话管理、SSE、Token usage、成本、鉴权、限流、缓存、fallback、部署与压测。”**
+开始新对话前：**“chat-api 当前位于 `v2-langchain-rag-plus` 分支，定位为 Production-ready LLM Chat Gateway。Chat-Day2 已完成统一 ChatProvider、Mock/Ollama/OpenAI Provider、ProviderFactory、请求级 provider/model override，以及 `/chat`、`/chat/stream`、`/prompt/compare` 主链路迁移；`pytest -q` 为 80 passed，GitHub Actions CI 已绿。下一步开始 Chat-Day3：实现 OpenAI-compatible `/v1/chat/completions`，不要重复 agent-api 的 Agentic RAG / GraphRAG / Multi-Agent / MCP。”**
 
-# HANDOFF（chat-api v2-plus 升级起点，基于 Day30 归档版）
+# HANDOFF（chat-api v2-plus，Chat-Day2 completed）
 
 ## 0. 环境与项目
 
 - 环境：WSL2 Ubuntu + conda env=`chatapi` (Python 3.10)
 - 项目：`~/projects/chat-api`（GitHub: ConnorLuis/chat-api）
 - 已完成 v2 分支：`v2-langchain-rag`
-- 当前计划升级分支：`v2-langchain-rag-plus`
+- 当前开发分支：`v2-langchain-rag-plus`
 - v1 稳定分支：`master`
+- 当前测试：`pytest -q` → `80 passed`
+- 当前 CI：GitHub Actions green
+- 下一里程碑：Chat-Day3 OpenAI-compatible `/v1/chat/completions`
 - Ollama：安装在 Windows；模型 `qwen2.5:7b` 已 pull
 - WSL 访问 Windows Ollama：
 
@@ -25,7 +28,7 @@ export OLLAMA_BASE_URL="http://$WIN_IP:11434"
 
 ## v2-plus Upgrade Direction（Production-ready LLM Chat Gateway）
 
-当前 `chat-api v2-langchain-rag` 已完成并可归档。下一步建议从该分支新开：
+当前 `chat-api v2-langchain-rag` 已完成并作为历史基线保留，当前开发已经进入：
 
 ```text
 v2-langchain-rag-plus
@@ -151,13 +154,30 @@ Optional Chat-Day18-Day20:
   简单 Web UI、云部署、项目总结和简历 bullet 打磨。
 ```
 
-### Chat-Day1 当前状态
+### Chat-Day1 状态
 
 ```text
+Branch created: v2-langchain-rag-plus
+README / HANDOFF positioning: completed
+LLM_GATEWAY_ROADMAP.md: local-only, do not commit
 Runtime code changed: no
-Current pytest status: pytest -q green
-LLM_GATEWAY_ROADMAP.md policy: local-only, do not commit
-Next milestone: Chat-Day2 Provider abstraction upgrade
+pytest / CI: green
+```
+
+### Chat-Day2 状态（completed）
+
+```text
+Provider contract: completed
+MockProvider: completed
+OllamaProvider: completed
+OpenAIProvider boundary: completed
+ProviderFactory: completed
+request-level provider/model override: completed
+/chat migration: completed
+/chat/stream migration: completed
+/prompt/compare migration: completed
+pytest -q: 80 passed
+GitHub Actions CI: green
 ```
 
 ### 本地路线图文件策略
@@ -168,32 +188,123 @@ Next milestone: Chat-Day2 Provider abstraction upgrade
 LLM_GATEWAY_ROADMAP.md
 ```
 
-该文件只用于本地规划和学习，不进入 git。提交时只提交：
+该文件只用于本地规划和学习，不进入 git。README、HANDOFF、源码、测试和正式 Day 记录可按阶段提交；不要提交 `LLM_GATEWAY_ROADMAP.md`。
+
+### Chat-Day3 下一步
 
 ```text
-README.md
-HANDOFF.md
+实现 OpenAI-compatible /v1/chat/completions API。
+
+要求：
+1. 新增独立兼容 route / schema / adapter。
+2. 非流式响应尽量对齐 OpenAI Chat Completions 结构。
+3. 复用现有 ChatProvider / ProviderFactory，不重新写一套模型调用逻辑。
+4. 保持现有 /chat、/chat/stream、/prompt/compare 行为兼容。
+5. 不提前混入会话数据库、鉴权、限流、fallback 或 Agent 能力。
 ```
 
-不要提交：
+---
+
+## Chat-Day2：Provider 抽象升级（completed）
+
+### 目标
 
 ```text
-LLM_GATEWAY_ROADMAP.md
+1. 梳理现有 LLMEngine / Mock / Ollama 调用链。
+2. 设计 ChatProvider 协议。
+3. 统一 Provider 请求、响应、流式 Chunk 和 Usage 边界。
+4. 保留 MockProvider 用于 deterministic tests / CI。
+5. 保留 OllamaProvider 用于本地模型。
+6. 新增 OpenAIProvider 边界。
+7. 新增 ProviderFactory。
+8. 支持请求级 provider/model override。
+9. 保持 /chat、/chat/stream、/prompt/compare 及 RAG/SSE/error contract 兼容。
 ```
 
-### Chat-Day2 预告
-
-Chat-Day2 应该开始动代码：
+### 新增 Provider 层
 
 ```text
-1. 梳理当前 LLMEngine / mock / ollama 调用逻辑。
-2. 设计 ChatProvider 抽象。
-3. 保留 MockProvider 用于 CI。
-4. 保留 OllamaProvider 用于本地模型。
-5. 新增 OpenAIProvider 边界。
-6. 新增 ProviderFactory。
-7. 支持请求级 provider/model override。
-8. 保持现有 /chat 和 /chat/stream 行为兼容。
+src/app/llm/providers/
+├── __init__.py
+├── adapters.py
+├── base.py
+├── errors.py
+├── factory.py
+├── mock.py
+├── ollama.py
+├── openai.py
+└── schemas.py
+```
+
+统一边界：
+
+```text
+ChatProvider
+ProviderMessage
+ProviderChatRequest
+ProviderChatResponse
+ProviderChatChunk
+ProviderUsage
+```
+
+主调用链：
+
+```text
+/chat          → get_chat_provider() → provider.chat()
+/chat/stream   → get_chat_provider() → provider.stream()
+/prompt/compare→ get_chat_provider() → provider.chat()
+```
+
+### Provider 实现
+
+- `MockProvider`：无网络、确定性输出，继续作为 CI 和契约测试默认 Provider。
+- `OllamaProvider`：保留原 `/api/generate` 协议，支持请求级 `model` 覆盖，并映射统一 response/chunk/usage。
+- `OpenAIProvider`：支持 OpenAI / OpenAI-compatible endpoint；SDK 通过 `requirements-openai.txt` 按需安装并懒加载。
+- OpenAI 配置边界：`OPENAI_API_KEY`、`OPENAI_BASE_URL`、`OPENAI_MODEL`、`OPENAI_TIMEOUT_S`。
+- `ProviderFactory`：标准化 provider 名称，构造 `mock|ollama|openai`，非法名称抛清晰异常。
+
+### Schema 与兼容性
+
+- `ChatRequest.provider` 和 `PromptCompareRequest.provider` 扩展为 `mock|ollama|openai`。
+- 两者新增可选 `model` 字段；请求级模型优先于 Provider 默认模型。
+- API 层 schema 与 Provider 内部 schema 分离，RAG、PromptHub、session 等字段不会污染模型 Provider。
+- `/chat` 同步错误继续返回 HTTP 502 + structured detail。
+- `/chat/stream` 继续返回 HTTP 200 SSE，业务错误通过 `event:error` 传递。
+- SSE 成功顺序保持 `meta → token* → usage → done`。
+- Provider 结束分片中的空 `delta` 不会被暴露为空 token 事件。
+
+### 测试与排障
+
+新增/扩展：
+
+```text
+tests/providers/
+tests/chat/test_chat_provider_compatibility.py
+tests/stream/test_stream_provider_compatibility.py
+tests/prompt/test_prompt_compare_provider_compatibility.py
+```
+
+一次流式测试失败并非后端丢失空格，而是测试 SSE parser 使用 `strip()` / `lstrip()` 删除了合法空格 token。修复为只移除 SSE 冒号后的一个可选分隔空格，并避免对整个 event block 执行 `strip()`。
+
+最终验收：
+
+```text
+Provider tests: 13 passed
+Chat tests: 8 passed
+Stream tests: 9 passed
+Prompt tests: 3 passed
+pytest -q: 80 passed
+GitHub Actions CI: green
+```
+
+### 当前兼容代码
+
+旧 `src/app/llm/engines/` 暂时保留，避免不必要的大范围删除；当前聊天业务入口已经不再直接调用 `get_engine()`、`engine.generate()` 或 `engine.stream()`。后续是否删除或改成 adapter，应在兼容测试覆盖充分后单独处理。
+
+### 下一里程碑
+
+```text
+Chat-Day3: OpenAI-compatible /v1/chat/completions API
 ```
 
 ---
@@ -634,7 +745,7 @@ Embedding：
 
 ---
 
-## 3. 当前状态（可用验收）
+## 3. v2-langchain-rag 归档状态（历史基线）
 
 - 当前分支：`v2-langchain-rag`
 - v1 主链路仍在 master 稳定可用。
@@ -643,7 +754,7 @@ Embedding：
 - RAG：同步与流式均支持 `use_kb/kb_top_k`；citations 可追溯到 `doc_id/chunk_id/source/title`；Day25 后 `/chat` 与 `/chat/stream` 均通过统一 `RAGBackend` 构建上下文；Day26 后 `native/langchain` 双 backend 均可真实检索；Day27 后暴露 backend/timing observability；Day28 后支持 Hybrid RAG fusion rerank；Day29 后支持可复现 seed/eval/report workflow。
 - 评测：`python scripts/eval_qa_rag.py --qa eval/qa_rag_20.jsonl --provider ollama` 可跑完 QA20，并输出 summary；Day29 后推荐使用 `scripts/run_rag_eval_workflow.py` 一键 seed/eval/report。
 - 报告：`python scripts/build_eval_report.py ... --strict` 可生成 report，并在当前结果下通过 regression gates。
-- 测试：`pytest -q` 当前 63 passed（包含 Day24 backend factory、Day25 route backend 接入、Day26 langchain backend contract、Day27 observability、Day28 hybrid rerank、Day29 workflow tests）。
+- 归档测试基线：`pytest -q` 为 63 passed（包含 Day24 backend factory、Day25 route backend 接入、Day26 langchain backend contract、Day27 observability、Day28 hybrid rerank、Day29 workflow tests）。
 - CI：master 与 v2 分支均可通过 GitHub Actions；Day26–Day29 相关提交均已通过。
 - Demo：`docs/demo_storyline_day22.md` 已经实跑验证；Day30 新增 `docs/v2_demo_guide.md` 作为 v2 演示命令手册。
 - 文档：Day30 已完成 `docs/system_design.md`、`docs/v2_demo_guide.md`、`docs/interview_talk_track.md`，可用于系统设计讲解、能力演示与面试表达。
@@ -724,23 +835,42 @@ backup_kb_reset/
 
 ---
 
-## 6. v2-plus 当前升级方向
+## 6. v2-plus 当前状态与下一步
 
-`chat-api v2-langchain-rag` 阶段已经正式完结，并作为 RAG / LangChain / Hybrid RAG / Eval Workflow 项目基线保留。
-
-当前新的工作方向不是切到 Agent 项目，而是在新分支继续升级：
+当前开发分支：
 
 ```text
 v2-langchain-rag-plus
 ```
 
-目标定位：
+当前定位：
 
 ```text
 Production-ready LLM Chat Gateway / 多模型统一接入与流式对话后端系统
 ```
 
-该分支后续不要重复 `agent-api` 已经完成的能力：
+### 已完成
+
+```text
+Chat-Day1:
+  分支、定位、README/HANDOFF、本地路线图、anti-drift 规则。
+
+Chat-Day2:
+  ChatProvider 协议；
+  ProviderMessage / Request / Response / Chunk / Usage；
+  MockProvider / OllamaProvider / OpenAIProvider；
+  ProviderFactory；
+  OpenAI optional dependency lazy loading；
+  request-level provider/model override；
+  /chat、/chat/stream、/prompt/compare 主链路迁移；
+  legacy API / SSE / RAG / error contract compatibility；
+  pytest -q 80 passed；
+  GitHub Actions CI green。
+```
+
+### Anti-drift
+
+后续不要把 `chat-api` 扩展成另一个 Agent 平台，不新增或重复：
 
 ```text
 复杂 Agent Graph
@@ -751,58 +881,32 @@ MCP 平台化
 agent-api 风格 Agent 编排系统
 ```
 
-`chat-api v2-langchain-rag-plus` 应聚焦生产级 LLM Chat Backend 工程能力：
+继续聚焦：
 
 ```text
-多 Provider 接入
-OpenAI-compatible /v1/chat/completions
-SSE 流式输出
-会话管理
-消息持久化
-上下文窗口截断
-Token usage 统计
-成本估算
-API Key 鉴权
-限流与 token quota
-Prompt cache
-Provider fallback / retry / timeout
-结构化日志
-trace_id 请求追踪
-health / readiness
-Docker / docker-compose 部署
-测试与 CI
-压测记录
-API 文档
-前端可接入
-```
-
-### Chat-Day1 当前状态
-
-```text
-Runtime code changed: no
-Current pytest status: pytest -q green
-LLM_GATEWAY_ROADMAP.md policy: local-only, do not commit
-Committed files for Chat-Day1: README.md and HANDOFF.md only
+OpenAI-compatible API
+标准流式协议
+会话与消息持久化
+上下文管理
+usage / cost
+API key / rate limit / quota
+cache / fallback / retry / timeout
+容器化、可观测性、CI 与压测
 ```
 
 ### Next Work
 
-推荐下一步：
-
 ```text
-Chat-Day2: Provider abstraction upgrade
+Chat-Day3: OpenAI-compatible /v1/chat/completions API
 ```
 
-Chat-Day2 应完成：
+Chat-Day3 验收重点：
 
 ```text
-1. 梳理当前 LLMEngine / mock / ollama 调用逻辑。
-2. 设计 ChatProvider 抽象。
-3. 保留 MockProvider 用于 deterministic tests / CI。
-4. 保留 OllamaProvider 用于本地模型。
-5. 新增 OpenAIProvider 边界。
-6. 新增 ProviderFactory。
-7. 支持请求级 provider/model override。
-8. 保持现有 /chat 与 /chat/stream 行为兼容。
+1. 复用 ChatProvider / ProviderFactory。
+2. 新增 OpenAI-compatible request / response schema。
+3. 完成非流式 /v1/chat/completions。
+4. 设计 stream=true 的边界，但不要提前破坏 Chat-Day4 的标准 SSE 路线。
+5. 保持 /chat、/chat/stream、/prompt/compare、RAG、PromptHub、Replay 行为兼容。
+6. pytest -q 与 CI 保持全绿。
 ```
-
