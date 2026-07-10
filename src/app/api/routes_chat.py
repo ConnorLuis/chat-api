@@ -9,7 +9,10 @@ from src.app.llm.prompt_registry import PromptRegistry, ensure_system_prompt
 from src.app.llm.run_logger import append_jsonl
 from src.app.core.settings import settings
 from src.app.llm.schemas import ChatRequest, ChatResponse, ErrorResponse, RagMetadata, Citation  # 请求/响应模型
-from src.app.llm.engines import get_engine # 引擎工厂函数
+from src.app.llm.providers import (
+    build_provider_request,
+    get_chat_provider,
+)
 from fastapi.responses import StreamingResponse # 流式响应
 from src.app.core.sse import sse_event # SSE格式生成函数
 from src.app.rag.factory import get_rag_backend
@@ -20,8 +23,26 @@ from src.app.rag.factory import get_rag_backend
 router = APIRouter()
 prompt_registry = PromptRegistry(settings.PROMPTS_DIR)
 
-def engine_model(engine) -> str:
-    return (getattr(engine, "model", None) or "unknown")
+def provider_model(
+    provider,
+    requested_model: str | None = None,
+) -> str:
+    """解析当前请求实际使用的模型名，并保证永远返回字符串。"""
+
+    try:
+        model = provider.resolve_model(requested_model)
+    except Exception:
+        model = (
+            requested_model
+            or getattr(provider, "default_model", None)
+            or getattr(provider, "model", None)
+        )
+
+    return model or "unknown"
+
+
+# 暂时保留旧名称，避免其他模块或历史代码直接导入时失效。
+engine_model = provider_model
 
 def build_rag_prompt_context(context_text: str) -> str:
     return f"你是一个严谨助手 仅基于以下资料回答，并在回答末尾列出引用编号 \n\n<CONTEXT>\n{context_text}"
@@ -118,7 +139,21 @@ CHAT_OPENAPI_EXAMPLES = {
         "description": "Use ollama provider to call local LLM.",
         "value": {
             "provider": "ollama",
+            "model": "qwen2.5:7b",
             "messages": [{"role": "user", "content": "一句话解释RAG"}],
+            "max_tokens": 64,
+        },
+    },
+    "openai": {
+        "summary": "OpenAI-compatible example",
+        "description": (
+            "Use the OpenAI provider or an OpenAI-compatible endpoint. "
+            "Requires OPENAI_API_KEY and a request/default model."
+        ),
+        "value": {
+            "provider": "openai",
+            "model": "your-model-name",
+            "messages": [{"role": "user", "content": "Hello"}],
             "max_tokens": 64,
         },
     },
@@ -152,8 +187,10 @@ def _last_user_text(messages) -> str | None:
 def chat(req: Request, body: Annotated[ChatRequest, Body(openapi_examples=CHAT_OPENAPI_EXAMPLES)]):
     # 从请求上下文获取trace ID（链路追踪）
     trace_id = get_trace_id(req)
-    # 请求中的provider（mock/ollama）获取对应引擎实例
-    engine = get_engine(body.provider)
+    # 通过统一 ProviderFactory 获取本次请求的模型 Provider。
+    provider = get_chat_provider(body.provider)
+    active_provider = provider.name
+    active_model = provider_model(provider, body.model)
 
     start = time.perf_counter()
 
@@ -231,17 +268,34 @@ def chat(req: Request, body: Annotated[ChatRequest, Body(openapi_examples=CHAT_O
     final_system_text = "\n\n".join(parts) if parts else None
     if final_system_text:
         messages = ensure_system_prompt(messages, final_system_text)
+    provider_request = build_provider_request(
+        messages,
+        model=body.model,
+        temperature=body.temperature,
+        top_p=body.top_p,
+        max_tokens=body.max_tokens,
+    )
+
     try:
-        # 调用引擎的非流式generate方法生成回复（Mock返回模拟内容，Ollama调用真实模型）
-        answer = engine.generate(messages, body.temperature, body.top_p, body.max_tokens)
+        provider_response = provider.chat(provider_request)
+        answer = provider_response.content
+
+        active_provider = (
+            provider_response.provider
+            or active_provider
+        )
+        active_model = (
+            provider_response.model
+            or active_model
+        )
     except Exception as e:
         latency_ms = int((time.perf_counter() - start) * 1000)
-        err = build_error(trace_id, engine.name, engine_model(engine), latency_ms, f"{engine.name} failed: {str(e)}")
+        err = build_error(trace_id, active_provider, active_model, latency_ms, f"{active_provider} failed: {str(e)}")
         record = {
             "trace_id": trace_id,
             "mode": "chat",
-            "provider": engine.name,
-            "model": engine_model(engine),
+            "provider": active_provider,
+            "model": active_model,
             "prompt_id": prompt_id,
             "prompt_version": prompt_version if prompt_id else "none",
             "latency_ms": latency_ms,
@@ -261,8 +315,8 @@ def chat(req: Request, body: Annotated[ChatRequest, Body(openapi_examples=CHAT_O
 
     latency_ms = int((time.perf_counter() - start) * 1000)
     metadata = {
-        "provider": engine.name,
-        "model": engine_model(engine),
+        "provider": active_provider,
+        "model": active_model,
         "latency_ms": latency_ms,
         "prompt_id": prompt_id or "none",
         "prompt_version": prompt_version if prompt_id else "none",
@@ -275,8 +329,8 @@ def chat(req: Request, body: Annotated[ChatRequest, Body(openapi_examples=CHAT_O
     record = {
         "trace_id": trace_id,
         "mode": "chat",
-        "provider": engine.name,
-        "model": engine_model(engine),
+        "provider": active_provider,
+        "model": active_model,
         "prompt_id": prompt_id,
         "prompt_version": prompt_version if prompt_id else "none",
         "latency_ms": latency_ms,
@@ -305,7 +359,7 @@ def chat(req: Request, body: Annotated[ChatRequest, Body(openapi_examples=CHAT_O
     兼容性与鲁棒性：
         - 引擎兼容：同时支持 Mock/Ollama 引擎，Mock 用于测试，Ollama 用于真实场景；
         - 异常兜底：所有异常都捕获并推送 error 事件，避免接口崩溃；
-        - 边界处理：engine_model(engine) 兼容无 model 属性的引擎。
+        - 边界处理：active_model 兼容无 model 属性的引擎。
     前后端协同：
         - 前端可通过 meta 事件提前初始化；
         - token 事件实现打字机效果；
@@ -351,12 +405,14 @@ def chat(req: Request, body: Annotated[ChatRequest, Body(openapi_examples=CHAT_O
 async def chat_stream(req: Request, body: Annotated[ChatRequest, Body(openapi_examples=CHAT_OPENAPI_EXAMPLES)]):
     # 从请求上下文获取trace ID（链路追踪）
     trace_id = get_trace_id(req)
-    # 请求中的provider（mock/ollama）获取对应引擎实例
-    engine = get_engine(body.provider)
+    # 通过统一 ProviderFactory 获取本次请求的模型 Provider。
+    provider = get_chat_provider(body.provider)
 
     # 定义异步生成器函数（核心：逐段产生响应数据）
     async def gen():
         start = time.perf_counter() # 记录开始时间（统计耗时）
+        active_provider = provider.name
+        active_model = provider_model(provider, body.model)
 
         messages = body.messages
         system_text = None
@@ -459,11 +515,19 @@ async def chat_stream(req: Request, body: Annotated[ChatRequest, Body(openapi_ex
         if final_system_text:
             messages = ensure_system_prompt(messages, final_system_text)
 
+        provider_request = build_provider_request(
+            messages,
+            model=body.model,
+            temperature=body.temperature,
+            top_p=body.top_p,
+            max_tokens=body.max_tokens,
+        )
+
         # 把 trace / provider 发出去，前端好做初始化
         meta = {
             "trace_id": trace_id,
-            "provider": engine.name,
-            "model": engine_model(engine),
+            "provider": active_provider,
+            "model": active_model,
             "prompt_id": prompt_id or "none",
             "prompt_version": prompt_version if prompt_id else "none",
             "rag": rag_dict,
@@ -474,11 +538,21 @@ async def chat_stream(req: Request, body: Annotated[ChatRequest, Body(openapi_ex
         token_events = 0
 
         try:
-            # 调用引擎的stream方法（异步迭代器），逐token获取回复
-            async for token in engine.stream(messages, body.temperature, body.top_p, body.max_tokens):
+            # Provider 统一返回 ProviderChatChunk。
+            # 空 delta 可能只携带 usage / finish_reason，不能输出为空 token 事件。
+            async for chunk in provider.stream(provider_request):
+                if chunk.provider:
+                    active_provider = chunk.provider
+                if chunk.model:
+                    active_model = chunk.model
+
+                token = chunk.delta
+                if not token:
+                    continue
+
                 token_events += 1
                 output_chars += len(token)
-                yield sse_event("token", token) # 推送token事件，逐段返回数据给前端
+                yield sse_event("token", token)
 
             # 计算耗时（毫秒）
             latency_ms = int((time.perf_counter() - start) * 1000)
@@ -488,8 +562,8 @@ async def chat_stream(req: Request, body: Annotated[ChatRequest, Body(openapi_ex
             # 推送使用统计（usage事件）：包含性能、模型、token数等
             usage = {
                 "trace_id": trace_id,
-                "provider": engine.name,
-                "model": engine_model(engine),
+                "provider": active_provider,
+                "model": active_model,
                 "latency_ms": latency_ms,
                 "token_events": token_events,
                 "prompt_id": prompt_id or "none",
@@ -506,8 +580,8 @@ async def chat_stream(req: Request, body: Annotated[ChatRequest, Body(openapi_ex
             append_jsonl(settings.RUN_LOG_PATH, {
                 "trace_id": trace_id,
                 "mode": "stream",
-                "provider": engine.name,
-                "model": engine_model(engine),
+                "provider": active_provider,
+                "model": active_model,
                 "prompt_id": prompt_id,
                 "prompt_version": prompt_version if prompt_id else "none",
                 "latency_ms": latency_ms,
@@ -524,7 +598,7 @@ async def chat_stream(req: Request, body: Annotated[ChatRequest, Body(openapi_ex
 
         except Exception as e:
             latency_ms = int((time.perf_counter() - start) * 1000)
-            err = build_error(trace_id, engine.name, engine_model(engine), latency_ms, f"{engine.name} failed: {str(e)}")
+            err = build_error(trace_id, active_provider, active_model, latency_ms, f"{active_provider} failed: {str(e)}")
             err["prompt_id"] = prompt_id or "none"
             err["prompt_version"] = prompt_version if prompt_id else "none"
             err["rag"] = {
@@ -538,8 +612,8 @@ async def chat_stream(req: Request, body: Annotated[ChatRequest, Body(openapi_ex
             append_jsonl(settings.RUN_LOG_PATH, {
                 "trace_id": trace_id,
                 "mode": "stream",
-                "provider": engine.name,
-                "model": engine_model(engine),
+                "provider": active_provider,
+                "model": active_model,
                 "prompt_id": prompt_id,
                 "prompt_version": prompt_version if prompt_id else "none",
                 "latency_ms": latency_ms,

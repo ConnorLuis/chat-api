@@ -2,7 +2,7 @@ from pydantic import BaseModel, Field, ConfigDict
 from typing import List, Literal, Optional,Any
 
 """基于 Pydantic v2 定义 AI 聊天接口的全量数据模型
-    覆盖「请求体（ChatRequest）」「消息结构（ChatMessage）」「响应体（ChatResponse）」「错误响应（ErrorResponse）」四类核心数据结构   
+    覆盖「请求体（ChatRequest）」「消息结构（ChatMessage）」「响应体（ChatResponse）」「错误响应（ErrorResponse）」四类核心数据结构
 """
 # 聊天消息的最小单元，适配大语言模型的标准消息格式
 class ChatMessage(BaseModel):
@@ -26,7 +26,13 @@ class ChatRequest(BaseModel):
     max_tokens: int = 256
     # 选择器，诉后端代码：“本次聊天请求，需要使用哪一个 AI 服务 / 模型引擎来处理并生成回复”。
     # 限制只能mock或ollama回复，避免传入无效值
-    provider: Literal["mock", "ollama"] = "mock"
+    provider: Literal["mock", "ollama", "openai"] = "mock"
+
+    # 请求级模型覆盖。为空时使用对应 Provider 的默认模型。
+    model: str | None = Field(
+        default=None,
+        description="Request-level model override.",
+    )
 
     prompt_id: str | None = None
     prompt_version: str | None = None
@@ -181,7 +187,11 @@ class PromptRef(BaseModel):
 
 # 提示词对比请求
 class PromptCompareRequest(BaseModel):
-    provider: Literal["mock", "ollama"] = "mock"
+    provider: Literal["mock", "ollama", "openai"] = "mock"
+    model: str | None = Field(
+        default=None,
+        description="Request-level model override.",
+    )
     messages: List[ChatMessage]
     prompt_a: PromptRef
     prompt_b: PromptRef

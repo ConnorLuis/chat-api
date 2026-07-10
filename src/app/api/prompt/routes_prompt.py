@@ -3,12 +3,15 @@ from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Body
 
-from src.app.api.routes_chat import engine_model
+from src.app.api.routes_chat import provider_model
 from src.app.core.settings import settings
 from src.app.core.errors import build_error
 from src.app.llm.prompt_registry import PromptRegistry, ensure_system_prompt
 from src.app.llm.run_logger import append_jsonl
-from src.app.llm.engines import get_engine
+from src.app.llm.providers import (
+    build_provider_request,
+    get_chat_provider,
+)
 from src.app.llm.schemas import PromptCompareResponse, PromptCompareRequest, PromptCompareItem, PromptRef, PromptCompareMetrics
 
 router = APIRouter()
@@ -18,7 +21,7 @@ prompt_registry = PromptRegistry(settings.PROMPTS_DIR)
 def prompt_compare(body: PromptCompareRequest = Body(...)):
 
     compare_group_id = str(uuid4())
-    engine = get_engine(body.provider)
+    provider = get_chat_provider(body.provider)
 
     def run_variant(prompt_ref: PromptRef, variant: str) -> PromptCompareItem:
         trace_id = str(uuid4())
@@ -35,18 +38,39 @@ def prompt_compare(body: PromptCompareRequest = Body(...)):
             system_text = prompt_registry.render(template, prompt_vars)
             messages = ensure_system_prompt(messages, system_text)
 
+        active_provider = provider.name
+        active_model = provider_model(provider, body.model)
+
+        provider_request = build_provider_request(
+            messages,
+            model=body.model,
+            temperature=body.temperature,
+            top_p=body.top_p,
+            max_tokens=body.max_tokens,
+        )
+
         try:
-            answer = engine.generate(messages, body.temperature, body.top_p, body.max_tokens)
+            provider_response = provider.chat(provider_request)
+            answer = provider_response.content
+
+            active_provider = (
+                provider_response.provider
+                or active_provider
+            )
+            active_model = (
+                provider_response.model
+                or active_model
+            )
         except Exception as e:
             latency_ms = int((time.perf_counter() - start) * 1000)
-            err = build_error(trace_id, engine.name, engine_model(engine), latency_ms, f"{engine.name} failed: {str(e)}")
+            err = build_error(trace_id, active_provider, active_model, latency_ms, f"{active_provider} failed: {str(e)}")
             record = {
                 "compare_group_id": compare_group_id,
                 "variant": variant,
                 "trace_id": trace_id,
                 "mode": "compare",
-                "provider": engine.name,
-                "model": engine_model(engine),
+                "provider": active_provider,
+                "model": active_model,
                 "prompt_id": prompt_id or "none",
                 "prompt_version": prompt_version if prompt_id else "none",
                 "latency_ms": latency_ms,
@@ -61,8 +85,8 @@ def prompt_compare(body: PromptCompareRequest = Body(...)):
             raise HTTPException(status_code=502, detail=err)
         latency_ms = int((time.perf_counter() - start) * 1000)
         metadata = {
-            "provider": engine.name,
-            "model": engine_model(engine),
+            "provider": active_provider,
+            "model": active_model,
             "latency_ms": latency_ms,
             "prompt_id": prompt_id,
             "prompt_version": prompt_version if prompt_id else "none"
@@ -73,8 +97,8 @@ def prompt_compare(body: PromptCompareRequest = Body(...)):
             "variant": variant,
             "trace_id": trace_id,
             "mode": "compare",
-            "provider": engine.name,
-            "model": engine_model(engine),
+            "provider": active_provider,
+            "model": active_model,
             "prompt_id": prompt_id,
             "prompt_version": prompt_version if prompt_id else "none",
             "latency_ms": latency_ms,
