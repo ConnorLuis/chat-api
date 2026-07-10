@@ -1,6 +1,6 @@
-开始新对话前：**“chat-api 当前位于 `v2-langchain-rag-plus` 分支，定位为 Production-ready LLM Chat Gateway。Chat-Day2 已完成统一 ChatProvider、Mock/Ollama/OpenAI Provider、ProviderFactory、请求级 provider/model override，以及 `/chat`、`/chat/stream`、`/prompt/compare` 主链路迁移；`pytest -q` 为 80 passed，GitHub Actions CI 已绿。下一步开始 Chat-Day3：实现 OpenAI-compatible `/v1/chat/completions`，不要重复 agent-api 的 Agentic RAG / GraphRAG / Multi-Agent / MCP。”**
+开始新对话前：**“chat-api 当前位于 `v2-langchain-rag-plus` 分支，定位为 Production-ready LLM Chat Gateway。Chat-Day2 已完成统一 Provider 层；Chat-Day3 已完成非流式 OpenAI-compatible `/v1/chat/completions`、独立 schema/error adapter、provider override 和官方 Python OpenAI SDK 兼容验证；`pytest -q` 为 87 passed，GitHub Actions CI 已绿，working tree clean。下一步开始 Chat-Day4：实现标准 `chat.completion.chunk` SSE streaming，同时保持旧 `/chat/stream` 契约不变，不要重复 agent-api 的 Agentic RAG / GraphRAG / Multi-Agent / MCP。”**
 
-# HANDOFF（chat-api v2-plus，Chat-Day2 completed）
+# HANDOFF（chat-api v2-plus，Chat-Day3 completed）
 
 ## 0. 环境与项目
 
@@ -9,9 +9,9 @@
 - 已完成 v2 分支：`v2-langchain-rag`
 - 当前开发分支：`v2-langchain-rag-plus`
 - v1 稳定分支：`master`
-- 当前测试：`pytest -q` → `80 passed`
+- 当前测试：`pytest -q` → `87 passed`
 - 当前 CI：GitHub Actions green
-- 下一里程碑：Chat-Day3 OpenAI-compatible `/v1/chat/completions`
+- 下一里程碑：Chat-Day4 OpenAI-compatible SSE streaming
 - Ollama：安装在 Windows；模型 `qwen2.5:7b` 已 pull
 - WSL 访问 Windows Ollama：
 
@@ -180,6 +180,26 @@ pytest -q: 80 passed
 GitHub Actions CI: green
 ```
 
+### Chat-Day3 状态（completed）
+
+```text
+POST /v1/chat/completions: completed
+OpenAI-compatible request/response/error schemas: completed
+OpenAICompatRoute validation adapter: completed
+ChatProvider / ProviderFactory reuse: completed
+provider gateway extension: completed
+OPENAI_COMPAT_DEFAULT_PROVIDER: completed
+non-stream chat.completion response: completed
+optional usage mapping: completed
+stream=true Day4 boundary: completed
+n=1 boundary: completed
+official Python OpenAI SDK compatibility: completed
+pytest tests/openai_compat -q: 7 passed
+pytest -q: 87 passed
+GitHub Actions CI: green
+working tree: clean
+```
+
 ### 本地路线图文件策略
 
 详细路线图文件：
@@ -190,17 +210,19 @@ LLM_GATEWAY_ROADMAP.md
 
 该文件只用于本地规划和学习，不进入 git。README、HANDOFF、源码、测试和正式 Day 记录可按阶段提交；不要提交 `LLM_GATEWAY_ROADMAP.md`。
 
-### Chat-Day3 下一步
+### Chat-Day4 下一步
 
 ```text
-实现 OpenAI-compatible /v1/chat/completions API。
+实现 /v1/chat/completions 的 OpenAI-compatible SSE streaming。
 
 要求：
-1. 新增独立兼容 route / schema / adapter。
-2. 非流式响应尽量对齐 OpenAI Chat Completions 结构。
-3. 复用现有 ChatProvider / ProviderFactory，不重新写一套模型调用逻辑。
-4. 保持现有 /chat、/chat/stream、/prompt/compare 行为兼容。
-5. 不提前混入会话数据库、鉴权、限流、fallback 或 Agent 能力。
+1. 只在 stream=true 分支启用 StreamingResponse。
+2. 输出 data: {chat.completion.chunk JSON}。
+3. 使用 choices[].delta 传递 role/content 增量。
+4. 结束时输出 finish_reason，并以 data: [DONE] 收尾。
+5. 可选 usage chunk 必须与现有 ProviderUsage 边界对齐。
+6. 保持旧 /chat/stream 的 meta/token/usage/done/error 契约不变。
+7. 不提前混入会话数据库、鉴权、限流、fallback 或 Agent 能力。
 ```
 
 ---
@@ -304,7 +326,263 @@ GitHub Actions CI: green
 ### 下一里程碑
 
 ```text
-Chat-Day3: OpenAI-compatible /v1/chat/completions API
+Chat-Day4: OpenAI-compatible SSE streaming
+```
+
+---
+
+## Chat-Day3：OpenAI-compatible `/v1/chat/completions`（completed）
+
+### 目标
+
+```text
+1. 复用 ChatProvider / ProviderFactory。
+2. 新增独立 OpenAI-compatible request / response / error schema。
+3. 完成非流式 POST /v1/chat/completions。
+4. 为 stream=true 建立明确边界，不提前实现半套 SSE。
+5. 保持 /chat、/chat/stream、/prompt/compare、RAG、PromptHub、Replay 兼容。
+6. pytest 与 CI 全绿。
+```
+
+### 新增模块
+
+```text
+src/app/api/openai_compat/
+├── __init__.py
+├── errors.py
+├── route.py
+├── routes_chat_completions.py
+└── schemas.py
+```
+
+测试：
+
+```text
+tests/openai_compat/test_chat_completions.py
+```
+
+### 调用链
+
+```text
+POST /v1/chat/completions
+  → OpenAIChatCompletionRequest
+  → provider override 或 OPENAI_COMPAT_DEFAULT_PROVIDER
+  → get_chat_provider()
+  → build_provider_request()
+  → provider.chat()
+  → ProviderChatResponse
+  → OpenAIChatCompletionResponse
+```
+
+新路由不调用旧 `/chat` 路由函数，因此不会把 RAG、PromptHub、Replay、session 或旧 metadata 契约耦合进 OpenAI-compatible API。
+
+### 请求子集
+
+当前支持：
+
+```text
+model
+messages（纯文本）
+roles：developer/system/user/assistant
+temperature
+top_p
+max_tokens
+max_completion_tokens
+n=1
+stream=false
+user
+provider（chat-api 网关扩展字段）
+```
+
+当前明确不支持：
+
+```text
+stream=true 标准 chunk（Chat-Day4）
+n > 1
+tools / tool_calls / function
+多模态 content parts
+logprobs 计算
+response_format
+```
+
+### 非流式响应
+
+响应结构：
+
+```text
+id: chatcmpl-...
+object: chat.completion
+created: Unix seconds
+model
+choices[0].index
+choices[0].message.role=assistant
+choices[0].message.content
+choices[0].finish_reason
+choices[0].logprobs=null
+usage（仅在 Provider 返回完整统计时存在）
+```
+
+未知 usage 不伪造为零，而是省略。
+
+### 错误契约
+
+`OpenAICompatRoute` 只转换 `/v1` 兼容路由的 `RequestValidationError`，不会注册全局异常处理器，因此旧接口的 FastAPI/HTTP 错误契约不受影响。
+
+统一错误形状：
+
+```json
+{
+  "error": {
+    "message": "...",
+    "type": "invalid_request_error",
+    "param": "stream",
+    "code": "streaming_not_supported_yet"
+  }
+}
+```
+
+关键边界：
+
+```text
+stream=true → HTTP 400 / streaming_not_supported_yet
+n > 1 → HTTP 400 / unsupported_value
+非法请求 → HTTP 400 / invalid_request
+Provider 调用失败 → HTTP 502 / provider_error
+非法默认 Provider 配置 → HTTP 500 / invalid_gateway_configuration
+```
+
+### Provider 选择
+
+```text
+body.provider
+  → OPENAI_COMPAT_DEFAULT_PROVIDER
+  → 默认 mock
+```
+
+标准 OpenAI SDK 可通过：
+
+```python
+extra_body={"provider": "mock"}
+```
+
+传递网关扩展字段。
+
+### 真实兼容性验证
+
+本地安装并验证：
+
+```text
+openai 2.45.0
+```
+
+客户端：
+
+```python
+client = OpenAI(
+    base_url="http://127.0.0.1:8000/v1",
+    api_key="local-test-key",
+)
+```
+
+实测结果：
+
+```text
+client.chat.completions.create() 调用成功
+completion.object == "chat.completion"
+completion.choices[0].message.content 正常
+completion.choices[0].finish_reason == "stop"
+completion.choices[0].logprobs is None
+completion.usage is None（MockProvider 无真实 token 统计）
+extra_body provider override 调用成功
+```
+
+当前 `local-test-key` 只满足 SDK 客户端初始化；API Key 鉴权安排在 Chat-Day9。
+
+### 实现过程中的问题
+
+#### 1. 新路由最初全部返回 404
+
+原因：
+
+```text
+main.py 路由注册补丁依赖文件结尾换行；
+include marker 未匹配；
+脚本提前退出；
+openai_compat_router 未被 include_router()。
+```
+
+修复：
+
+```text
+使用不依赖尾部换行的精确字符串匹配；
+注册 openai_compat_router；
+直接枚举 app.routes 确认 /v1/chat/completions 存在。
+```
+
+#### 2. `logprobs: null` 被响应过滤掉
+
+原因：
+
+```text
+response_model_exclude_none=True
+```
+
+同时删除了：
+
+```text
+choices[0].logprobs = null
+```
+
+但直接关闭该选项又会让未知 usage 变成：
+
+```text
+usage: null
+```
+
+修复：
+
+```text
+成功响应手动 model_dump(exclude_none=True)
+→ 省略未知 usage
+→ 显式补回 choices[].logprobs = null
+→ JSONResponse 返回
+```
+
+### 验收
+
+```text
+pytest tests/openai_compat -q
+7 passed
+
+pytest -q
+87 passed in 6.10s / 6.11s
+
+GitHub Actions CI
+green
+
+commit
+732f084 feat(day3): add OpenAI-compatible chat completions
+
+working tree
+clean
+```
+
+### 兼容性结论
+
+```text
+/chat 未修改
+/chat/stream 未修改
+/prompt/compare 未修改
+RAG 未修改
+PromptHub 未修改
+Replay 未修改
+旧 SSE 成功/失败事件契约未修改
+```
+
+### 下一里程碑
+
+```text
+Chat-Day4: OpenAI-compatible SSE streaming
 ```
 
 ---
@@ -860,12 +1138,45 @@ Chat-Day2:
   ProviderMessage / Request / Response / Chunk / Usage；
   MockProvider / OllamaProvider / OpenAIProvider；
   ProviderFactory；
-  OpenAI optional dependency lazy loading；
   request-level provider/model override；
   /chat、/chat/stream、/prompt/compare 主链路迁移；
-  legacy API / SSE / RAG / error contract compatibility；
   pytest -q 80 passed；
   GitHub Actions CI green。
+
+Chat-Day3:
+  POST /v1/chat/completions；
+  独立 OpenAI-compatible schema / error adapter；
+  ChatProvider / ProviderFactory 复用；
+  provider gateway extension；
+  OPENAI_COMPAT_DEFAULT_PROVIDER；
+  非流式 chat.completion 响应；
+  可选 usage 映射；
+  stream=true Day4 边界；
+  n=1 边界；
+  官方 Python OpenAI SDK 兼容实测；
+  tests/openai_compat 7 passed；
+  pytest -q 87 passed；
+  GitHub Actions CI green；
+  commit 732f084；
+  working tree clean。
+```
+
+### 当前 API 边界
+
+```text
+POST /chat:
+  旧项目同步 API，保留 metadata / RAG / PromptHub 能力。
+
+POST /chat/stream:
+  旧项目自定义 SSE，保持 meta/token/usage/done/error。
+
+POST /prompt/compare:
+  Prompt A/B Compare，继续通过统一 Provider 层执行。
+
+POST /v1/chat/completions:
+  OpenAI-compatible 非流式接口；
+  stream=false 已完成；
+  stream=true 当前返回 HTTP 400 边界错误，等待 Chat-Day4。
 ```
 
 ### Anti-drift
@@ -897,16 +1208,20 @@ cache / fallback / retry / timeout
 ### Next Work
 
 ```text
-Chat-Day3: OpenAI-compatible /v1/chat/completions API
+Chat-Day4: OpenAI-compatible SSE streaming
 ```
 
-Chat-Day3 验收重点：
+Chat-Day4 验收重点：
 
 ```text
-1. 复用 ChatProvider / ProviderFactory。
-2. 新增 OpenAI-compatible request / response schema。
-3. 完成非流式 /v1/chat/completions。
-4. 设计 stream=true 的边界，但不要提前破坏 Chat-Day4 的标准 SSE 路线。
-5. 保持 /chat、/chat/stream、/prompt/compare、RAG、PromptHub、Replay 行为兼容。
-6. pytest -q 与 CI 保持全绿。
+1. 复用现有 OpenAIChatCompletionRequest 与 ChatProvider.stream()。
+2. stream=true 返回 Content-Type: text/event-stream。
+3. 每个数据块使用 data: {JSON}，object=chat.completion.chunk。
+4. 首个 chunk 建立 assistant role，后续 chunk 输出 content delta。
+5. 正确映射 finish_reason。
+6. 可选 usage chunk 与 ProviderUsage 对齐。
+7. 最终输出 data: [DONE]。
+8. Provider 失败时，在流已建立后输出可解析的 OpenAI-compatible error 事件。
+9. 保持旧 /chat/stream 的 meta/token/usage/done/error 契约不变。
+10. pytest -q 与 CI 保持全绿。
 ```

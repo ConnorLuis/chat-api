@@ -33,7 +33,7 @@ MCP Integration Layer
 ```text
 多 Provider 接入
 OpenAI-compatible /v1/chat/completions
-SSE 流式输出
+OpenAI-compatible SSE streaming
 会话管理
 消息持久化
 上下文窗口截断
@@ -63,9 +63,15 @@ Chat-Day2:
   完成 ChatProvider 抽象、Mock/Ollama/OpenAI Provider、ProviderFactory、
   请求级 provider/model override，以及 /chat、/chat/stream、/prompt/compare 主链路迁移。
 
+Chat-Day3:
+  完成非流式 OpenAI-compatible /v1/chat/completions、
+  独立 request/response/error schema、provider override、OpenAI SDK 客户端兼容验证，
+  并为 stream=true 建立明确的 Chat-Day4 边界。
+
 Current validation:
-  pytest -q -> 80 passed
+  pytest -q -> 87 passed
   GitHub Actions CI -> green
+  working tree -> clean
 
 Local-only roadmap:
   LLM_GATEWAY_ROADMAP.md，不进入 git。
@@ -74,9 +80,10 @@ Local-only roadmap:
 ### 下一步
 
 ```text
-Chat-Day3:
-  实现 OpenAI-compatible /v1/chat/completions API，
-  在不破坏现有 /chat 与 /chat/stream 契约的前提下增加标准兼容入口。
+Chat-Day4:
+  为 /v1/chat/completions 实现标准 OpenAI-compatible SSE streaming，
+  输出 chat.completion.chunk / choices[].delta / data: [DONE]，
+  同时保持旧 /chat/stream 的 meta/token/usage/done/error 契约不变。
 ```
 <!-- LLM_GATEWAY_PLUS_END -->
 
@@ -87,6 +94,7 @@ Chat-Day3:
 * `POST /chat`：同步聊天（`provider=mock|ollama|openai`），支持请求级 `model` override，返回 `metadata`
 * `POST /chat/stream`：SSE 流式聊天（`provider=mock|ollama|openai`），事件：`meta/token/usage/done/error`
 * `POST /prompt/compare`：通过统一 Provider 层执行 Prompt A/B Compare
+* `POST /v1/chat/completions`：OpenAI-compatible 非流式 Chat Completions，支持标准响应结构与网关 `provider` override
 * 全局中间件：`x-trace-id` + latency 日志
 * 统一 ChatProvider：MockProvider / OllamaProvider / OpenAIProvider
 * ProviderFactory：屏蔽不同模型服务调用差异，OpenAI SDK 按需懒加载
@@ -143,7 +151,7 @@ langchain-chroma
 
 主 `requirements.txt` 不包含 LangChain，避免 CI 和基础测试被可选依赖污染。
 
-### Optional: OpenAI Provider dependencies (Chat-Day2)
+### Optional: OpenAI Provider / SDK dependencies (Chat-Day2 / Chat-Day3)
 
 OpenAI / OpenAI-compatible Provider 使用可选依赖：
 
@@ -157,7 +165,7 @@ python -m pip install -r requirements-openai.txt
 requirements-openai.txt
 ```
 
-`openai` SDK 在 `OpenAIProvider` 真正执行请求时才懒加载，因此基础 CI、MockProvider 和 OllamaProvider 不依赖 OpenAI SDK。
+`openai` SDK 在 `OpenAIProvider` 真正执行请求时才懒加载，因此基础 CI、MockProvider 和 OllamaProvider 不依赖 OpenAI SDK。Chat-Day3 还使用该依赖完成了官方 Python 客户端对本地 `/v1/chat/completions` 的兼容实测；本地验证时安装版本为 `openai 2.45.0`。
 
 ### 2) Run server
 
@@ -183,6 +191,7 @@ curl http://localhost:8000/health
 * `OPENAI_BASE_URL`：可选 OpenAI-compatible endpoint
 * `OPENAI_MODEL`：OpenAI Provider 默认模型；请求体 `model` 优先级更高
 * `OPENAI_TIMEOUT_S` (default: `60`)
+* `OPENAI_COMPAT_DEFAULT_PROVIDER` (default: `mock`)：`/v1/chat/completions` 未传网关扩展字段 `provider` 时使用的默认 Provider
 * `RUN_LOG_PATH` (default: `runs/prompt_runs.jsonl`)
 * `KB_DIR` (default: `kb`)
 * `KB_CHROMA_DIR` (default: `${KB_DIR}/chroma`)
@@ -254,6 +263,154 @@ POST /prompt/compare
 - OllamaProvider 继续使用现有 `/api/generate` 协议，避免在 Provider 重构时同时改变模型协议。
 - OpenAIProvider 支持 OpenAI / OpenAI-compatible endpoint，SDK 懒加载，缺少 API key 时沿用现有 502 错误契约。
 - 旧 `src/app/llm/engines/` 暂时保留为历史兼容代码；当前聊天业务入口已迁移到 `src/app/llm/providers/`。
+
+---
+
+## OpenAI-compatible Chat Completions (Chat-Day3)
+
+Chat-Day3 新增：
+
+```text
+POST /v1/chat/completions
+```
+
+该接口是独立兼容层，直接复用 Chat-Day2 的 `ChatProvider` 与 `ProviderFactory`，不会调用旧 `/chat` 路由，也不会把 RAG、PromptHub、Replay 或旧 metadata 契约耦合进 OpenAI-compatible API。
+
+### 当前支持范围
+
+```text
+非流式 stream=false
+单 choice：n=1
+纯文本 messages
+roles：developer / system / user / assistant
+model / temperature / top_p
+max_tokens / max_completion_tokens
+可选网关扩展字段 provider=mock|ollama|openai
+```
+
+当前暂不支持：
+
+```text
+stream=true 的标准 chunk 输出（Chat-Day4）
+tools / tool_calls / function
+多模态 content parts
+n > 1
+logprobs 计算
+response_format
+```
+
+### Request example
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "mock-compatible-model",
+    "messages": [
+      {
+        "role": "user",
+        "content": "hello from curl"
+      }
+    ]
+  }' | python -m json.tool
+```
+
+### Response shape
+
+```json
+{
+  "id": "chatcmpl-...",
+  "object": "chat.completion",
+  "created": 1783671773,
+  "model": "mock-compatible-model",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "[mock] you said: hello from curl"
+      },
+      "finish_reason": "stop",
+      "logprobs": null
+    }
+  ]
+}
+```
+
+当 Provider 返回完整 `prompt_tokens/completion_tokens/total_tokens` 时，接口会返回 `usage`；未知用量不会伪造为零，而是省略该字段。
+
+### Provider routing
+
+标准客户端只传 `model` 时，使用：
+
+```text
+OPENAI_COMPAT_DEFAULT_PROVIDER
+```
+
+默认值是：
+
+```text
+mock
+```
+
+网关调用方也可以传扩展字段：
+
+```json
+{
+  "provider": "ollama",
+  "model": "qwen2.5:7b",
+  "messages": [
+    {
+      "role": "user",
+      "content": "hello"
+    }
+  ]
+}
+```
+
+官方 Python SDK 可通过 `extra_body={"provider": "mock"}` 传递该扩展字段。
+
+### Official Python SDK compatibility
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://127.0.0.1:8000/v1",
+    api_key="local-test-key",
+)
+
+completion = client.chat.completions.create(
+    model="mock-compatible-model",
+    messages=[
+        {
+            "role": "user",
+            "content": "hello from openai sdk",
+        }
+    ],
+)
+
+print(completion.choices[0].message.content)
+```
+
+`local-test-key` 目前只用于满足客户端初始化要求；网关 API Key 鉴权安排在 Chat-Day9。
+
+### Error contract
+
+OpenAI-compatible 路由使用独立错误形状：
+
+```json
+{
+  "error": {
+    "message": "...",
+    "type": "invalid_request_error",
+    "param": "stream",
+    "code": "streaming_not_supported_yet"
+  }
+}
+```
+
+当前 `stream=true` 返回 HTTP 400，并明确保留到 Chat-Day4；不会错误复用旧 `/chat/stream` 的 `meta/token/usage/done/error` 事件。
 
 ---
 
@@ -463,16 +620,35 @@ data: <string-or-json>
 
 ```bash
 pytest -q
-# 80 passed (Chat-Day2)
+# 87 passed (Chat-Day3)
 ```
 
-Chat-Day2 新增/覆盖的测试范围：
+Chat-Day2 新增/覆盖：
 
 ```text
 tests/providers/
 tests/chat/test_chat_provider_compatibility.py
 tests/stream/test_stream_provider_compatibility.py
 tests/prompt/test_prompt_compare_provider_compatibility.py
+```
+
+Chat-Day3 新增：
+
+```text
+tests/openai_compat/test_chat_completions.py
+```
+
+Chat-Day3 测试覆盖：
+
+```text
+非流式 chat.completion 响应结构
+provider override
+默认 Provider 配置
+Provider usage 映射
+stream=true Day4 边界
+n > 1 拒绝
+OpenAI-compatible validation error
+OpenAIProvider 缺少 API key 时的 502 error shape
 ```
 
 ---
@@ -1689,7 +1865,7 @@ p95_latency_ms = 2750
 All regression gates passed!
 ```
 
-### v2-plus Current Status (Chat-Day2 completed)
+### v2-plus Current Status (Chat-Day3 completed)
 
 `chat-api v2-langchain-rag` 继续作为 RAG / LangChain / Hybrid RAG / Eval Workflow 项目基线保留；当前开发分支为：
 
@@ -1697,51 +1873,94 @@ All regression gates passed!
 v2-langchain-rag-plus
 ```
 
-Chat-Day2 已完成：
+Chat-Day2 已完成统一 Provider 层：
 
 ```text
 ChatProvider Protocol
 ProviderMessage / ProviderChatRequest / ProviderChatResponse
 ProviderChatChunk / ProviderUsage
-MockProvider
-OllamaProvider
-OpenAIProvider boundary
+MockProvider / OllamaProvider / OpenAIProvider
 ProviderFactory
-OpenAI optional dependency lazy loading
 request-level provider/model override
-/chat route migration
-/chat/stream route migration
-/prompt/compare route migration
-legacy API / SSE / RAG / error contract compatibility
+/chat、/chat/stream、/prompt/compare 主链路迁移
+```
+
+Chat-Day3 已完成 OpenAI-compatible 非流式入口：
+
+```text
+POST /v1/chat/completions
+独立 OpenAI-compatible request / response / error schemas
+OpenAICompatRoute validation error adapter
+ChatProvider / ProviderFactory 复用
+provider gateway extension
+OPENAI_COMPAT_DEFAULT_PROVIDER
+chat.completion 标准响应形状
+可选 usage 映射
+stream=true 明确返回 Chat-Day4 边界错误
+n=1 边界
+官方 Python OpenAI SDK 客户端实测
+```
+
+关键文件：
+
+```text
+src/app/api/openai_compat/__init__.py
+src/app/api/openai_compat/errors.py
+src/app/api/openai_compat/route.py
+src/app/api/openai_compat/routes_chat_completions.py
+src/app/api/openai_compat/schemas.py
+tests/openai_compat/test_chat_completions.py
 ```
 
 最终验收：
 
 ```text
-pytest -q -> 80 passed
+Day3 tests -> 7 passed
+pytest -q -> 87 passed in 6.10s / 6.11s
 GitHub Actions CI -> green
+commit -> 732f084 feat(day3): add OpenAI-compatible chat completions
+working tree -> clean
 ```
 
-关键兼容性结果：
+真实兼容性验证：
 
 ```text
-/chat:
-  Mock/Ollama/OpenAI Provider 均通过统一 ProviderFactory 进入主链路。
+curl 非流式请求成功
+object = chat.completion
+id = chatcmpl-...
+choices[0].message.role = assistant
+choices[0].logprobs = null
+未知 usage 被省略
+openai 2.45.0 Python SDK 调用成功
+extra_body provider override 调用成功
+stream=true 返回 HTTP 400 OpenAI error shape
+schema validation 返回 OpenAI error shape，不返回 FastAPI detail
+```
 
-/chat/stream:
-  保持 meta → token* → usage → done；失败仍通过 event:error 传递。
+兼容性边界：
 
-/prompt/compare:
-  A/B 两个 variant 均通过统一 Provider 层执行。
-
-OpenAI boundary:
-  无 API key 时返回结构化 502；基础 CI 不安装、不调用真实 OpenAI。
+```text
+/chat、/chat/stream、/prompt/compare 未修改
+RAG、PromptHub、Replay 行为未修改
+旧 /chat/stream SSE 契约保持 meta → token* → usage → done / error
+/v1/chat/completions 的标准流式协议留给 Chat-Day4
 ```
 
 下一里程碑：
 
 ```text
-Chat-Day3: OpenAI-compatible /v1/chat/completions API
+Chat-Day4: OpenAI-compatible SSE streaming
 ```
 
-Chat-Day3 不应删除或破坏现有 `/chat`、`/chat/stream`、RAG、PromptHub、Compare、Replay 契约，而应新增独立的 OpenAI-compatible adapter / schema / route。
+Chat-Day4 应在 `/v1/chat/completions` 的 `stream=true` 分支实现：
+
+```text
+Content-Type: text/event-stream
+data: {chat.completion.chunk JSON}
+choices[].delta
+finish_reason
+可选 usage chunk
+data: [DONE]
+```
+
+同时不得改变旧 `/chat/stream` 的自定义 SSE 契约。
