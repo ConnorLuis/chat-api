@@ -1,6 +1,6 @@
-开始新对话前：**“chat-api 当前位于 `v2-langchain-rag-plus` 分支，定位为 Production-ready LLM Chat Gateway。Chat-Day2 已完成统一 Provider 层；Chat-Day3 已完成非流式 OpenAI-compatible `/v1/chat/completions`；Chat-Day4 已完成标准 OpenAI-compatible SSE；Chat-Day5 已完成 SQLAlchemy 2.x 持久化基础、SQLite/PostgreSQL 边界、Conversation / Message ORM、外键级联、session、repository/service 和隔离测试；`pytest -q` 为 105 passed，GitHub Actions CI 已绿。下一步开始 Chat-Day6：把会话持久化接入聊天主链路，实现历史加载与上下文窗口截断，同时保持现有 API/SSE 契约不变，不要重复 agent-api 的 Agentic RAG / GraphRAG / Multi-Agent / MCP。”**
+开始新对话前：**“chat-api 当前位于 `v2-langchain-rag-plus` 分支，定位为 Production-ready LLM Chat Gateway。Chat-Day2 已完成统一 Provider 层；Chat-Day3 已完成非流式 OpenAI-compatible `/v1/chat/completions`；Chat-Day4 已完成标准 OpenAI-compatible SSE；Chat-Day5 已完成 SQLAlchemy 2.x 持久化基础；Chat-Day6 已完成 Conversation HTTP API、`conversation_id` 可选边界、稳定 `sequence_no`、历史加载、最近 N 轮 / token budget 截断、同步/流式完整成功后原子落库，以及 Provider 失败或客户端断开时不保存半轮消息。当前 `pytest -q` 为 126 passed，提交 `d60c5e3`，GitHub Actions run `29145652536` 为 success。下一步开始 Chat-Day7：Token usage accounting；继续保持 OpenAI-compatible、旧 SSE、RAG、PromptHub、Replay 契约，不要重复 agent-api 的 Agentic RAG / GraphRAG / Multi-Agent / MCP。”**
 
-# HANDOFF（chat-api v2-plus，Chat-Day5 completed）
+# HANDOFF（chat-api v2-plus，Chat-Day6 completed）
 
 ## 0. 环境与项目
 
@@ -9,9 +9,9 @@
 - 已完成 v2 分支：`v2-langchain-rag`
 - 当前开发分支：`v2-langchain-rag-plus`
 - v1 稳定分支：`master`
-- 当前测试：`pytest -q` → `105 passed`
-- 当前 CI：GitHub Actions green
-- 下一里程碑：Chat-Day6 多会话历史与上下文窗口截断
+- 当前测试：`pytest -q` → `126 passed`
+- 当前 CI：GitHub Actions success（run `29145652536`，commit `d60c5e3`）
+- 下一里程碑：Chat-Day7 Token usage accounting
 - Ollama：安装在 Windows；模型 `qwen2.5:7b` 已 pull
 - WSL 访问 Windows Ollama：
 
@@ -249,6 +249,38 @@ pytest -q: 105 passed
 GitHub Actions CI: green
 ```
 
+### Chat-Day6 状态（completed）
+
+```text
+Conversation HTTP API: completed
+conversation_id optional request/response boundary: completed
+stateless compatibility when conversation_id omitted: completed
+Message.sequence_no: completed
+UNIQUE(conversation_id, sequence_no): completed
+stable history ordering: completed
+history + current request merge: completed
+recent N user-led turns truncation: completed
+token budget truncation: completed
+short read session before Provider call: completed
+sync success atomic persistence: completed
+stream success persistence before usage/done: completed
+Provider failure no-write semantics: completed
+client disconnect no-partial-assistant semantics: completed
+PromptHub / RAG server system prompt not persisted: completed
+Conversation missing -> pre-provider HTTP 404: completed
+OpenAI-compatible remains stateless: completed
+pytest tests/chat -q: 14 passed
+pytest tests/conversations -q: 7 passed
+pytest tests/db -q: 14 passed
+pytest tests/stream -q: 16 passed
+pytest tests/openai_compat -q: 12 passed
+pytest -q: 126 passed
+manual API / DB sequence acceptance: passed
+commit: d60c5e3
+GitHub Actions run: 29145652536
+GitHub Actions result: success
+```
+
 ### 本地路线图文件策略
 
 详细路线图文件：
@@ -259,21 +291,457 @@ LLM_GATEWAY_ROADMAP.md
 
 该文件只用于本地规划和学习，不进入 git。README、HANDOFF、源码、测试和正式 Day 记录可按阶段提交；不要提交 `LLM_GATEWAY_ROADMAP.md`。
 
-### Chat-Day6 下一步
+### Chat-Day7 下一步
 
 ```text
-将 Conversation / Message 接入聊天主链路，
-实现多会话历史管理与上下文窗口截断。
+实现请求级 Token usage accounting。
 
 要求：
-1. 明确 conversation_id 的请求与响应边界。
-2. 保存 user / assistant 消息。
-3. 按稳定顺序加载历史消息。
-4. 将历史与当前请求合并后发送给 Provider。
-5. 实现最近 N 轮或 token budget 截断。
-6. 明确同步成功、流式成功、Provider 失败和客户端断开时的持久化语义。
-7. 增加 Conversation / Message 最小查询 API 或服务层能力。
-8. 保持 RAG、PromptHub、Replay、OpenAI-compatible 与旧 SSE 契约兼容。
+1. 明确 Provider 原生 usage 与本地估算 usage 的边界。
+2. 统一同步 /chat 与流式 /chat/stream 的 usage 记录。
+3. 记录 prompt_tokens / completion_tokens / total_tokens。
+4. 关联 trace_id / conversation_id / provider / model / latency。
+5. 明确失败请求、客户端断开和未知 usage 的记录语义。
+6. 请求级 usage 不强塞进 Message 表，建立独立数据模型。
+7. 为 Chat-Day8 cost estimation 与 usage summary API 预留稳定边界。
+8. 保持 OpenAI-compatible、RAG、PromptHub、Replay 与旧 SSE 契约。
+```
+
+---
+
+
+## Chat-Day6：多会话历史与上下文窗口（completed）
+
+### 目标
+
+```text
+1. 将 Chat-Day5 Conversation / Message 持久化基础接入聊天主链路。
+2. 明确 conversation_id 的可选请求/响应边界。
+3. 保存 user / assistant 消息。
+4. 使用稳定的 sequence_no 加载历史。
+5. 将历史与当前请求合并后发送给 Provider。
+6. 支持最近 N 轮与 token budget 截断。
+7. 明确同步、流式、Provider 失败和客户端断开的事务语义。
+8. 提供 Conversation / Message 最小 HTTP 查询能力。
+9. 保持 RAG、PromptHub、Replay、OpenAI-compatible 与旧 SSE 兼容。
+```
+
+### 核心边界
+
+```text
+conversation_id omitted:
+  保持原有无状态请求；
+  不读取数据库；
+  不写入 Conversation / Message。
+
+conversation_id provided:
+  Conversation 必须预先存在；
+  服务端读取持久化历史；
+  body.messages 只代表本次新增消息；
+  Provider 完整成功后保存本轮消息。
+```
+
+聊天路由不会隐式创建 Conversation；新会话通过：
+
+```text
+POST /conversations
+```
+
+创建。
+
+OpenAI-compatible：
+
+```text
+POST /v1/chat/completions
+```
+
+继续保持独立无状态，不读取或写入 Conversation 历史。
+
+### 新增模块
+
+```text
+src/app/api/conversations/
+├── __init__.py
+├── routes_conversations.py
+└── schemas.py
+
+src/app/conversations/
+├── __init__.py
+├── context_window.py
+└── history.py
+```
+
+新增测试：
+
+```text
+tests/conversations/
+├── conftest.py
+├── test_context_window.py
+└── test_conversation_api.py
+
+tests/chat/test_chat_conversation_history.py
+tests/stream/test_stream_conversation_history.py
+```
+
+### Message ordering
+
+Message 模型新增：
+
+```text
+sequence_no INTEGER NOT NULL
+CHECK(sequence_no >= 1)
+UNIQUE(conversation_id, sequence_no)
+```
+
+Repository 使用：
+
+```text
+MAX(sequence_no) + 1
+```
+
+分配下一序号，并固定按：
+
+```text
+sequence_no ASC
+```
+
+查询历史。
+
+设计原因：
+
+```text
+created_at 可能出现相同时间戳；
+UUID 不能表达业务顺序；
+sequence_no 是 Conversation 内显式、稳定、可测试的消息顺序。
+```
+
+### ConversationService
+
+新增：
+
+```text
+NewMessage
+append_messages()
+list_recent_messages()
+```
+
+`append_messages()` 在同一事务中追加多条消息，用于原子保存：
+
+```text
+当前 request messages
++
+最终 assistant message
+```
+
+Repository 只负责 `add / flush / query`，Service 继续负责 `commit / rollback`。
+
+### Context window
+
+配置：
+
+```text
+CONVERSATION_HISTORY_MAX_TURNS=10
+CONVERSATION_CONTEXT_TOKEN_BUDGET=4096
+CONVERSATION_HISTORY_FETCH_LIMIT=500
+```
+
+估算规则：
+
+```text
+estimate_text_tokens(content)
+  = max(1, ceil(len(content) / 2))
+
+estimate_message_tokens(message)
+  = estimate_text_tokens(content) + 4
+```
+
+合并顺序：
+
+```text
+PromptHub / RAG server system prompt
+→ 截断后的持久化历史
+→ 当前 body.messages
+```
+
+截断原则：
+
+```text
+当前消息永不删除；
+system prompt 计入预算；
+从最旧历史开始淘汰；
+优先保留最近完整 user-led turns；
+不保留不完整历史轮次。
+```
+
+修复过一个测试边界：
+
+```text
+current 消息估算 8 tokens
+最新完整 turn 估算 28 tokens
+总计 36 tokens
+
+测试原预算 35 时只能保留 current；
+将预算修正为 36，并断言 estimated_tokens == 36。
+```
+
+实现逻辑无需修改。
+
+### Conversation HTTP API
+
+```text
+POST   /conversations
+GET    /conversations
+GET    /conversations/{conversation_id}
+PATCH  /conversations/{conversation_id}
+DELETE /conversations/{conversation_id}
+GET    /conversations/{conversation_id}/messages
+```
+
+支持：
+
+```text
+创建
+分页列表
+单条查询
+重命名
+删除
+消息分页查询
+```
+
+不存在的 Conversation 返回 HTTP 404。
+
+### 同步 /chat 调用链
+
+```text
+读取 conversation_id
+→ 使用短 Session 验证 Conversation 并加载历史
+→ 释放 DB Session
+→ PromptHub / RAG
+→ build_context_window()
+→ Provider.chat()
+→ Provider 完整成功
+→ 当前 request messages + assistant 原子落库
+→ 返回 ChatResponse
+```
+
+响应新增可选字段：
+
+```text
+conversation_id
+```
+
+并保留原有：
+
+```text
+session_id
+```
+
+同步 Provider 失败：
+
+```text
+HTTP 502
+不保存当前 user
+不保存 assistant
+```
+
+Conversation 在 Provider 调用期间被删除或持久化失败时，不返回一个看似成功但未落库的 stateful response。
+
+### 流式 /chat/stream 调用链
+
+```text
+在 StreamingResponse 建立前验证 Conversation
+→ meta
+→ token*
+→ 内存累积完整 assistant
+→ Provider 正常结束
+→ 原子保存当前 request messages + assistant
+→ usage
+→ done
+```
+
+关键不变量：
+
+```text
+persist < usage < done
+```
+
+Provider 失败：
+
+```text
+meta → token*（可能为 0）→ error
+无 usage
+无 done
+不落库
+```
+
+客户端断开：
+
+```text
+传播 asyncio.CancelledError
+关闭 Provider async iterator
+不保存部分 assistant
+```
+
+数据库操作通过：
+
+```text
+run_in_threadpool()
+```
+
+执行，避免同步 SQLAlchemy 操作阻塞 async event loop。
+
+### PromptHub / RAG 边界
+
+PromptHub / RAG 生成的 server system prompt：
+
+```text
+参与 token budget
+参与当前 Provider 请求
+不写入 Message 表
+```
+
+RAG query 仍从当前 `body.messages` 中提取，不会误用旧历史中的最后一个 user 问题。
+
+### 手动验收
+
+通过的成功路径：
+
+```text
+Conversation create/get/list/rename
+无状态 /chat 不落库
+两轮同步会话落库
+流式会话加载 4 条历史
+流式成功事件 meta → token* → usage → done
+同步 + 流式后 sequence_no 1..6 连续
+不存在 Conversation 的 sync/stream 均在 Provider 前 HTTP 404
+```
+
+数据库实查最终确认：
+
+```text
+sequence_no unique: True
+sequence_no continuous: True
+```
+
+失败路径使用独立服务：
+
+```text
+port: 8001
+OLLAMA_BASE_URL=http://127.0.0.1:1
+```
+
+同步失败：
+
+```text
+HTTP 502
+before message count == after message count
+```
+
+流式失败：
+
+```text
+event: meta
+event: error
+无 event: usage
+无 event: done
+before message count == after message count
+```
+
+手动验收中曾出现两个操作问题：
+
+```text
+1. get_session_factory() 返回 sessionmaker，
+   正确用法是 session_factory = get_session_factory();
+   with session_factory() as session。
+
+2. 新失败服务最初因 8000 端口占用未启动，
+   请求实际打到旧的正常 Ollama 服务；
+   后改用 8001 独立失败服务完成验收。
+```
+
+这些是验收脚本/进程管理问题，不是业务代码缺陷。
+
+### 测试与 CI
+
+```text
+pytest tests/chat -q
+14 passed
+
+pytest tests/conversations -q
+7 passed
+
+pytest tests/db -q
+14 passed
+
+pytest tests/stream -q
+16 passed
+
+pytest tests/openai_compat -q
+12 passed
+
+pytest -q
+126 passed in 8.17s
+```
+
+Git：
+
+```text
+d60c5e3 feat(day6): add conversation history and context window
+```
+
+GitHub Actions：
+
+```text
+workflow: CI
+run id: 29145652536
+branch: v2-langchain-rag-plus
+sha: d60c5e3
+event: push
+status: completed
+result: success
+created: 2026-07-11T08:08:57Z
+```
+
+### 兼容性结论
+
+```text
+无 conversation_id 的 /chat 保持无状态
+无 conversation_id 的 /chat/stream 保持原事件契约
+/v1/chat/completions 保持独立无状态
+/prompt/compare 未接入 Conversation
+RAG contract 保持
+PromptHub contract 保持
+Replay contract 保持
+OpenAI SDK 非流式 / stream=True 保持通过
+```
+
+### 设计价值（面试可讲）
+
+```text
+1. 显式 stateful/stateless boundary：
+   不强迫所有调用方使用数据库历史。
+
+2. DB Session 与模型调用解耦：
+   慢 Provider 请求期间不占用数据库连接。
+
+3. 完整成功后写入：
+   避免 user-only 或 partial assistant 污染会话。
+
+4. 稳定 sequence_no：
+   明确解决时间戳/UUID 不能表达严格业务顺序的问题。
+
+5. 完整 turn 截断：
+   比简单截断最近 N 条 message 更符合对话语义。
+
+6. streaming commit barrier：
+   只有数据库提交成功后才发送 usage/done，
+   保证客户端看到 done 时会话状态已经持久化。
+```
+
+### 下一里程碑
+
+```text
+Chat-Day7: Token usage accounting
 ```
 
 ---
@@ -1568,38 +2036,83 @@ Chat-Day5:
   lazy engine / session；
   repository / service；
   isolated SQLite tests；
-  tests/db 13 passed；
   pytest -q 105 passed；
   CI green。
+
+Chat-Day6:
+  Conversation HTTP API；
+  conversation_id optional boundary；
+  Message.sequence_no；
+  stable history ordering；
+  history + current merge；
+  recent N turns / token budget truncation；
+  sync / stream atomic success persistence；
+  Provider failure / disconnect no-write semantics；
+  pytest -q 126 passed；
+  manual acceptance passed；
+  commit d60c5e3；
+  CI run 29145652536 success。
 ```
 
 ### 当前 API 边界
 
 ```text
 POST /chat:
-  项目原生同步 API。
+  项目原生同步 API；
+  conversation_id omitted -> stateless；
+  conversation_id provided -> history + persistence。
 
 POST /chat/stream:
-  项目原生 SSE。
+  项目原生 SSE；
+  stateful 模式在完整 Provider 结束和 DB commit 后才发送 usage/done。
 
 POST /prompt/compare:
-  Prompt A/B Compare。
+  Prompt A/B Compare；
+  当前保持无 Conversation persistence。
 
 POST /v1/chat/completions:
-  OpenAI-compatible 同步/流式入口。
+  OpenAI-compatible 同步/流式入口；
+  当前保持独立无状态。
 
-Database:
-  Conversation / Message 持久化基础已完成；
-  尚未接入聊天路由。
+Conversation API:
+  POST /conversations
+  GET /conversations
+  GET /conversations/{id}
+  PATCH /conversations/{id}
+  DELETE /conversations/{id}
+  GET /conversations/{id}/messages
 ```
+
+### 当前数据边界
+
+```text
+Conversation:
+  id / title / created_at / updated_at
+
+Message:
+  id / conversation_id / sequence_no /
+  role / content / provider / model /
+  token_count / created_at
+```
+
+请求级：
+
+```text
+prompt_tokens
+completion_tokens
+total_tokens
+estimated_cost
+trace_id
+latency_ms
+```
+
+仍未放入 Message 表；这些属于 Day7/Day8 的独立 usage/cost 记录。
 
 ### Anti-drift
 
 不要扩展为另一个 Agent 平台。继续聚焦：
 
 ```text
-多会话历史
-上下文管理
 usage / cost
 API key / rate limit / quota
 cache / fallback / retry / timeout
@@ -1609,20 +2122,18 @@ cache / fallback / retry / timeout
 ### Next Work
 
 ```text
-Chat-Day6: multi-conversation history and context window
+Chat-Day7: Token usage accounting
 ```
 
-Chat-Day6 验收重点：
+Chat-Day7 验收重点：
 
 ```text
-1. conversation_id 请求/响应边界。
-2. user / assistant 消息持久化。
-3. 稳定的历史消息顺序。
-4. 历史与当前请求合并。
-5. 最近 N 轮或 token budget 截断。
-6. 同步与流式成功路径的落库语义。
-7. Provider 失败和客户端断开时不写入不完整 assistant 消息。
-8. Conversation / Message 查询能力。
-9. 保持 RAG、PromptHub、Replay 与 OpenAI-compatible 契约。
-10. 保持现有 105 个测试与 CI 全绿。
+1. Provider 原生 usage 与本地估算 usage 的明确区分。
+2. 同步与流式统一 usage 数据模型。
+3. prompt_tokens / completion_tokens / total_tokens。
+4. trace_id / conversation_id / provider / model / latency 关联。
+5. 成功、Provider 失败、客户端断开的 usage 记录语义。
+6. 不把请求级 usage 强塞进 Message 表。
+7. 为 Day8 cost estimation 与 usage summary API 建立边界。
+8. 保持现有 126 个测试与 CI 全绿。
 ```

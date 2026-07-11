@@ -76,12 +76,20 @@ Chat-Day5:
   完成 SQLAlchemy 2.x 持久化基础、SQLite 开发存储与 PostgreSQL 迁移边界、
   Conversation / Message ORM、session、repository/service、外键级联与隔离测试。
 
+Chat-Day6:
+  完成 Conversation HTTP API、conversation_id 请求/响应边界、
+  稳定 sequence_no、历史加载、上下文窗口截断、同步/流式成功原子落库，
+  以及 Provider 失败或客户端断开时不保存不完整消息。
+
 Current validation:
-  pytest tests/db -q -> 13 passed
+  pytest tests/chat -q -> 14 passed
+  pytest tests/conversations -q -> 7 passed
+  pytest tests/db -q -> 14 passed
+  pytest tests/stream -q -> 16 passed
   pytest tests/openai_compat -q -> 12 passed
-  pytest tests/stream -q -> 9 passed
-  pytest -q -> 105 passed
-  GitHub Actions CI -> green
+  pytest -q -> 126 passed
+  GitHub Actions CI -> success
+  commit -> d60c5e3
 
 Local-only roadmap:
   LLM_GATEWAY_ROADMAP.md，不进入 git。
@@ -90,9 +98,9 @@ Local-only roadmap:
 ### 下一步
 
 ```text
-Chat-Day6:
-  将 Conversation / Message 接入聊天主链路，
-  实现多会话历史加载、消息持久化与上下文窗口截断。
+Chat-Day7:
+  设计并实现请求级 Token usage 记录，
+  明确同步、流式、Provider 原生 usage 与估算 usage 的统一边界。
 ```
 <!-- LLM_GATEWAY_PLUS_END -->
 
@@ -104,7 +112,10 @@ Chat-Day6:
 * `POST /chat/stream`：SSE 流式聊天（`provider=mock|ollama|openai`），事件：`meta/token/usage/done/error`
 * `POST /prompt/compare`：通过统一 Provider 层执行 Prompt A/B Compare
 * `POST /v1/chat/completions`：OpenAI-compatible Chat Completions，支持非流式 `chat.completion` 与流式 `chat.completion.chunk`，并支持网关 `provider` override
-* Conversation persistence foundation：SQLAlchemy 2.x、SQLite、Conversation / Message、repository/service、隔离测试
+* Conversation persistence：SQLAlchemy 2.x、SQLite、Conversation / Message、repository/service、稳定消息顺序与隔离测试
+* Multi-conversation history：`conversation_id`、历史加载、最近 N 轮 / token budget 截断
+* Conversation API：创建、列表、查询、重命名、删除与消息分页查询
+* Persistence semantics：同步/流式仅在完整成功后原子保存本轮 user/assistant；失败或客户端断开不保存半轮消息
 * 全局中间件：`x-trace-id` + latency 日志
 * 统一 ChatProvider：MockProvider / OllamaProvider / OpenAIProvider
 * ProviderFactory：屏蔽不同模型服务调用差异，OpenAI SDK 按需懒加载
@@ -203,6 +214,9 @@ curl http://localhost:8000/health
 * `OPENAI_TIMEOUT_S` (default: `60`)
 * `OPENAI_COMPAT_DEFAULT_PROVIDER` (default: `mock`)：`/v1/chat/completions` 未传网关扩展字段 `provider` 时使用的默认 Provider
 * `DATABASE_URL` (default: `sqlite:///./data/chat_api.db`)：Conversation / Message 关系数据库连接地址；未来可切换 PostgreSQL
+* `CONVERSATION_HISTORY_MAX_TURNS` (default: `10`)：最多保留的最近 user-led 历史轮数
+* `CONVERSATION_CONTEXT_TOKEN_BUDGET` (default: `4096`)：历史 + 当前请求 + system prompt 的估算 token 上限
+* `CONVERSATION_HISTORY_FETCH_LIMIT` (default: `500`)：从数据库读取的最大历史消息条数
 * `RUN_LOG_PATH` (default: `runs/prompt_runs.jsonl`)
 * `KB_DIR` (default: `kb`)
 * `KB_CHROMA_DIR` (default: `${KB_DIR}/chroma`)
@@ -820,6 +834,244 @@ usage/cost 落库
 
 ---
 
+
+## Multi-Conversation History and Context Window (Chat-Day6)
+
+Chat-Day6 将 Chat-Day5 的数据库基础正式接入项目原生聊天主链路：
+
+```text
+POST /chat
+POST /chat/stream
+```
+
+OpenAI-compatible：
+
+```text
+POST /v1/chat/completions
+```
+
+继续保持独立、无状态，不自动读取或写入 Conversation 历史。
+
+### Stateful vs stateless boundary
+
+`conversation_id` 是可选字段：
+
+```text
+不传 conversation_id:
+  继续使用原有无状态行为；
+  不读取数据库；
+  不写入 Conversation / Message。
+
+传入 conversation_id:
+  Conversation 必须已经存在；
+  服务端读取历史；
+  将截断后的历史与当前 body.messages 合并；
+  Provider 完整成功后原子保存当前请求消息和最终 assistant 回复。
+```
+
+新 Conversation 通过 `POST /conversations` 创建；聊天接口不会隐式创建 Conversation。
+
+`body.messages` 在有 `conversation_id` 时仍表示“本次新增消息”，不是客户端重复提交的完整历史。
+
+### Message ordering
+
+Message 新增：
+
+```text
+sequence_no: integer, >= 1
+```
+
+约束：
+
+```text
+UNIQUE(conversation_id, sequence_no)
+```
+
+历史查询固定按：
+
+```text
+sequence_no ASC
+```
+
+排序，不依赖 `created_at` 或 UUID，避免相同时间戳与随机 ID 造成顺序漂移。
+
+### Context window
+
+服务端消息合并顺序：
+
+```text
+PromptHub / RAG 生成的 server system prompt
+→ 截断后的持久化历史
+→ 当前 body.messages
+```
+
+当前配置：
+
+```text
+CONVERSATION_HISTORY_MAX_TURNS=10
+CONVERSATION_CONTEXT_TOKEN_BUDGET=4096
+CONVERSATION_HISTORY_FETCH_LIMIT=500
+```
+
+估算规则：
+
+```text
+message_tokens = max(1, ceil(len(content) / 2)) + 4
+```
+
+截断原则：
+
+```text
+1. 当前请求消息永不删除。
+2. system prompt 计入预算。
+3. 历史从旧到新淘汰。
+4. 优先保留最近完整 user-led turns。
+5. 不为了塞入预算而保留半个历史对话轮。
+```
+
+### Persistence semantics
+
+同步 `/chat`：
+
+```text
+读取历史时使用短 Session
+→ Provider 调用期间不持有 DB Session
+→ Provider 成功
+→ 当前请求消息 + assistant 最终回复在一个事务内提交
+```
+
+流式 `/chat/stream`：
+
+```text
+先输出 meta / token*
+→ 内存累积完整 assistant 内容
+→ Provider 正常结束
+→ 原子保存当前请求消息 + 完整 assistant
+→ 仅在提交成功后输出 usage / done
+```
+
+失败语义：
+
+```text
+Conversation 不存在:
+  在 Provider 调用前返回 HTTP 404。
+
+同步 Provider 失败:
+  HTTP 502；
+  不保存当前 user；
+  不保存 assistant。
+
+流式 Provider 失败:
+  event: meta → event: error；
+  不输出 usage / done；
+  不保存当前 user；
+  不保存部分 assistant。
+
+客户端断开:
+  传播 asyncio.CancelledError；
+  关闭 Provider async iterator；
+  不保存部分 assistant。
+```
+
+PromptHub / RAG 注入的 server system prompt 只参与当前 Provider 请求，不写入 Message 表。
+
+### Conversation HTTP API
+
+```text
+POST   /conversations
+GET    /conversations
+GET    /conversations/{conversation_id}
+PATCH  /conversations/{conversation_id}
+DELETE /conversations/{conversation_id}
+GET    /conversations/{conversation_id}/messages
+```
+
+创建 Conversation：
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/conversations \
+  -H "Content-Type: application/json" \
+  -d '{"title":"My conversation"}' \
+  | python -m json.tool
+```
+
+Stateful sync chat：
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "provider": "mock",
+    "model": "mock-model",
+    "conversation_id": "<conversation-id>",
+    "messages": [
+      {
+        "role": "user",
+        "content": "hello with persisted history"
+      }
+    ]
+  }' | python -m json.tool
+```
+
+Stateful stream：
+
+```bash
+curl -sN -X POST http://127.0.0.1:8000/chat/stream \
+  -H "Content-Type: application/json" \
+  -d '{
+    "provider": "mock",
+    "model": "mock-stream-model",
+    "conversation_id": "<conversation-id>",
+    "messages": [
+      {
+        "role": "user",
+        "content": "continue this conversation"
+      }
+    ]
+  }'
+```
+
+查询消息：
+
+```bash
+curl -s \
+  "http://127.0.0.1:8000/conversations/<conversation-id>/messages?limit=50&offset=0" \
+  | python -m json.tool
+```
+
+### Compatibility
+
+保持不变：
+
+```text
+无 conversation_id 的 /chat 行为
+无 conversation_id 的 /chat/stream 事件顺序
+PromptHub / RAG / Replay
+/prompt/compare
+OpenAI-compatible /v1/chat/completions
+OpenAI SDK 非流式与 stream=True
+```
+
+Day6 commit：
+
+```text
+d60c5e3 feat(day6): add conversation history and context window
+```
+
+GitHub Actions：
+
+```text
+workflow: CI
+run id: 29145652536
+branch: v2-langchain-rag-plus
+sha: d60c5e3
+status: completed
+result: success
+event: push
+```
+
+---
+
 ## API: Sync Chat
 
 ### Sync chat (mock)
@@ -836,6 +1088,7 @@ Example response（稳定契约字段）：
 {
   "trace_id": "...",
   "session_id": null,
+  "conversation_id": null,
   "answer": "...",
   "metadata": {
     "provider": "mock",
@@ -1026,7 +1279,7 @@ data: <string-or-json>
 
 ```bash
 pytest -q
-# 105 passed (Chat-Day5)
+# 126 passed (Chat-Day6)
 ```
 
 Chat-Day2：
@@ -1055,38 +1308,58 @@ tests/db/test_message_repository.py
 tests/db/test_conversation_service.py
 ```
 
-Chat-Day5 验收：
+Chat-Day6：
 
 ```text
+tests/conversations/conftest.py
+tests/conversations/test_context_window.py
+tests/conversations/test_conversation_api.py
+tests/chat/test_chat_conversation_history.py
+tests/stream/test_stream_conversation_history.py
+```
+
+Chat-Day6 验收：
+
+```text
+pytest tests/chat -q
+14 passed
+
+pytest tests/conversations -q
+7 passed
+
 pytest tests/db -q
-13 passed
+14 passed
+
+pytest tests/stream -q
+16 passed
 
 pytest tests/openai_compat -q
 12 passed
 
-pytest tests/stream -q
-9 passed
-
 pytest -q
-105 passed in 7.25s
+126 passed in 8.17s
 
 GitHub Actions CI
-green
+success
 ```
 
-Day5 测试锁定：
+Day6 测试锁定：
 
 ```text
-数据库 schema 初始化
-SQLite foreign_keys=ON
-Conversation create/get/list/update/delete
-Message create/get/list/delete
-不存在 Conversation 时拒绝孤儿 Message
-Conversation 删除级联删除 Message
-role/content/token_count 校验
-service commit / rollback
-临时 SQLite 数据库隔离
-现有 OpenAI-compatible 与旧 SSE 契约无回归
+conversation_id 可选边界
+无状态请求不访问数据库
+Conversation CRUD 与消息分页查询
+sequence_no 连续、唯一和稳定排序
+历史 + 当前请求的 Provider message 顺序
+最近 N 轮与 token budget 截断
+同步成功原子保存 user / assistant
+流式成功在 usage / done 前保存
+PromptHub / RAG server system prompt 不落库
+不存在 Conversation 在 Provider 前返回 404
+同步 Provider 失败不落库
+流式 Provider 失败不落库且无 usage / done
+客户端断开不保存部分 assistant
+OpenAI-compatible 与旧 SSE 契约无回归
 ```
 
 ---
@@ -2303,7 +2576,7 @@ p95_latency_ms = 2750
 All regression gates passed!
 ```
 
-### v2-plus Current Status (Chat-Day5 completed)
+### v2-plus Current Status (Chat-Day6 completed)
 
 `chat-api v2-langchain-rag` 继续作为 RAG / LangChain / Hybrid RAG / Eval Workflow 项目基线保留；当前开发分支为：
 
@@ -2311,93 +2584,92 @@ All regression gates passed!
 v2-langchain-rag-plus
 ```
 
-Chat-Day2 已完成统一 Provider 层。
-
-Chat-Day3 已完成 OpenAI-compatible 非流式 `chat.completion`。
-
-Chat-Day4 已完成 OpenAI-compatible `chat.completion.chunk` SSE。
-
-Chat-Day5 已完成关系数据库持久化基础：
+已完成：
 
 ```text
-SQLAlchemy 2.0.51
-SQLAlchemy>=2.0,<2.1
-DATABASE_URL
-SQLite default database
-PostgreSQL migration boundary
-DeclarativeBase / Mapped / mapped_column
-Conversation model
-Message model
-Conversation → Message foreign key
-ON DELETE CASCADE
-UTCDateTime
-lazy Engine / Session factory
-init_db
-Repository layer
-ConversationService
-commit / rollback boundary
-isolated tmp_path SQLite tests
+Chat-Day2:
+  统一 ChatProvider / ProviderFactory；
+  Mock / Ollama / OpenAI Provider；
+  request-level provider/model override。
+
+Chat-Day3:
+  OpenAI-compatible 非流式 chat.completion。
+
+Chat-Day4:
+  OpenAI-compatible chat.completion.chunk SSE。
+
+Chat-Day5:
+  SQLAlchemy 2.x 持久化基础；
+  Conversation / Message ORM；
+  SQLite / PostgreSQL boundary；
+  repository / service / isolated tests。
+
+Chat-Day6:
+  Conversation HTTP API；
+  conversation_id 可选边界；
+  sequence_no 稳定排序；
+  历史加载与 context window；
+  同步/流式成功后原子落库；
+  Provider 失败与客户端断开不保存半轮消息。
 ```
 
-数据模型：
+当前数据模型：
 
 ```text
 Conversation:
   id / title / created_at / updated_at
 
 Message:
-  id / conversation_id / role / content /
-  provider / model / token_count / created_at
+  id / conversation_id / sequence_no /
+  role / content / provider / model /
+  token_count / created_at
 ```
 
-关键文件：
+当前原生聊天边界：
 
 ```text
-src/app/db/
-src/app/services/
-tests/db/
-```
+/chat 和 /chat/stream:
+  不传 conversation_id → 无状态；
+  传 conversation_id → 服务端历史 + 持久化。
 
-兼容性：
-
-```text
-/chat 未修改
-/chat/stream 未修改
-/v1/chat/completions 未修改
-/prompt/compare 未修改
-Provider 未修改
-RAG 未修改
-PromptHub / Replay 未修改
+/v1/chat/completions:
+  保持独立 OpenAI-compatible 无状态接口。
 ```
 
 最终验收：
 
 ```text
-tests/db -> 13 passed
+tests/chat -> 14 passed
+tests/conversations -> 7 passed
+tests/db -> 14 passed
+tests/stream -> 16 passed
 tests/openai_compat -> 12 passed
-tests/stream -> 9 passed
-pytest -q -> 105 passed in 7.25s
-GitHub Actions CI -> green
-python -m src.app.db -> passed
-tables -> ['conversations', 'messages']
+pytest -q -> 126 passed in 8.17s
+manual API acceptance -> passed
+database sequence check -> unique and continuous
+sync provider failure no-write -> passed
+stream provider failure no-write -> passed
+client disconnect no-write -> deterministic test passed
+GitHub Actions CI -> success
+commit -> d60c5e3
+workflow run -> 29145652536
 data/chat_api.db -> ignored runtime artifact
 ```
 
 下一里程碑：
 
 ```text
-Chat-Day6: multi-conversation history and context window
+Chat-Day7: Token usage accounting
 ```
 
-Day6 应实现：
+Day7 应优先明确：
 
 ```text
-conversation_id API/request boundary
-聊天消息持久化
-历史消息加载
-历史与当前请求合并
-上下文窗口截断
-明确 message ordering
-同步/流式失败时的事务语义
-Conversation / Message HTTP API 或最小查询能力
+Provider 原生 usage 与本地估算 usage 的区分
+同步与流式统一 usage record
+request / trace / conversation 关联
+prompt_tokens / completion_tokens / total_tokens
+失败请求是否记录 usage
+避免把请求级 usage 强塞进 Message 表
+为 Day8 cost estimation 和 usage summary API 建立数据边界
 ```
