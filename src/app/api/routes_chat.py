@@ -73,6 +73,21 @@ def provider_model(
 engine_model = provider_model
 
 
+def request_caller_key_id(
+    request: Request,
+) -> str | None:
+    caller = getattr(
+        request.state,
+        "caller",
+        None,
+    )
+
+    if caller is None:
+        return None
+
+    return caller.key_id
+
+
 def decimal_to_json(
     value,
 ) -> str | None:
@@ -307,6 +322,9 @@ def _last_user_text(messages) -> str | None:
 def chat(req: Request, body: Annotated[ChatRequest, Body(openapi_examples=CHAT_OPENAPI_EXAMPLES)]):
     # 从请求上下文获取 trace ID。
     trace_id = get_trace_id(req)
+    caller_key_id = (
+        request_caller_key_id(req)
+    )
 
     conversation_id = body.conversation_id
     history_messages: tuple[ContextMessage, ...] = ()
@@ -477,6 +495,7 @@ def chat(req: Request, body: Annotated[ChatRequest, Body(openapi_examples=CHAT_O
                     get_session_factory()
                 ),
                 usage=NewUsageRecord(
+                    caller_key_id=caller_key_id,
                     trace_id=trace_id,
                     conversation_id=(
                         conversation_id
@@ -592,6 +611,7 @@ def chat(req: Request, body: Annotated[ChatRequest, Body(openapi_examples=CHAT_O
     )
 
     success_usage = NewUsageRecord(
+        caller_key_id=caller_key_id,
         trace_id=trace_id,
         conversation_id=conversation_id,
         request_kind="chat_sync",
@@ -661,6 +681,7 @@ def chat(req: Request, body: Annotated[ChatRequest, Body(openapi_examples=CHAT_O
                     get_session_factory()
                 ),
                 usage=NewUsageRecord(
+                    caller_key_id=caller_key_id,
                     trace_id=trace_id,
                     conversation_id=(
                         conversation_id
@@ -710,6 +731,7 @@ def chat(req: Request, body: Annotated[ChatRequest, Body(openapi_examples=CHAT_O
                     get_session_factory()
                 ),
                 usage=NewUsageRecord(
+                    caller_key_id=caller_key_id,
                     trace_id=trace_id,
                     conversation_id=(
                         conversation_id
@@ -890,6 +912,9 @@ async def chat_stream(
     ],
 ):
     trace_id = get_trace_id(req)
+    caller_key_id = (
+        request_caller_key_id(req)
+    )
 
     conversation_id = body.conversation_id
     history_messages: tuple[
@@ -1295,6 +1320,7 @@ async def chat_stream(
                                 get_session_factory()
                             ),
                             usage=NewUsageRecord(
+                                caller_key_id=caller_key_id,
                                 trace_id=trace_id,
                                 conversation_id=(
                                     conversation_id
@@ -1379,6 +1405,7 @@ async def chat_stream(
                                 get_session_factory()
                             ),
                             usage=NewUsageRecord(
+                                caller_key_id=caller_key_id,
                                 trace_id=trace_id,
                                 conversation_id=(
                                     conversation_id
@@ -1598,6 +1625,7 @@ async def chat_stream(
         )
 
         success_usage = NewUsageRecord(
+            caller_key_id=caller_key_id,
             trace_id=trace_id,
             conversation_id=conversation_id,
             request_kind="chat_stream",
@@ -1689,6 +1717,7 @@ async def chat_stream(
                             get_session_factory()
                         ),
                         usage=NewUsageRecord(
+                            caller_key_id=caller_key_id,
                             trace_id=trace_id,
                             conversation_id=(
                                 conversation_id
@@ -1788,6 +1817,7 @@ async def chat_stream(
                             get_session_factory()
                         ),
                         usage=NewUsageRecord(
+                            caller_key_id=caller_key_id,
                             trace_id=trace_id,
                             conversation_id=(
                                 conversation_id

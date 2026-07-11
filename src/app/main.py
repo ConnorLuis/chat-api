@@ -32,9 +32,16 @@ from src.app.auth.http import (
 from src.app.limits.dependency import (
     enforce_request_limits,
 )
+from src.app.limits.quota_dependency import (
+    enforce_daily_token_quota,
+)
 from src.app.limits.http import (
     install_rate_limit_headers_middleware,
     install_request_rate_limit_handler,
+)
+from src.app.limits.quota_http import (
+    install_daily_token_quota_handler,
+    install_token_quota_headers_middleware,
 )
 from src.app.core.logging import install_logging_middleware, setup_logging
 from src.app.db.session import (
@@ -52,6 +59,8 @@ install_logging_middleware(app)
 install_api_key_exception_handlers(app)
 install_request_rate_limit_handler(app)
 install_rate_limit_headers_middleware(app)
+install_daily_token_quota_handler(app)
+install_token_quota_headers_middleware(app)
 
 """定义健康检查接口
     运维 / 监控工具（如 Kubernetes、Prometheus）会定期调用这个接口，判断服务是否正常运行；
@@ -110,9 +119,14 @@ protected_dependencies = [
     Depends(enforce_request_limits),
 ]
 
+chat_dependencies = [
+    *protected_dependencies,
+    Depends(enforce_daily_token_quota),
+]
+
 app.include_router(
     chat_router,
-    dependencies=protected_dependencies,
+    dependencies=chat_dependencies,
 )
 app.include_router(
     prompts_router,
