@@ -5,3 +5,4 @@ pydantic
 pytest
 chromadb
 numpy
+SQLAlchemy>=2.0,<2.1

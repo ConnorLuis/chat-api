@@ -50,6 +50,14 @@ class Settings:
             "mock",
         ).strip().lower()
 
+    # Conversation / Message 关系数据库
+    @property
+    def DATABASE_URL(self) -> str:
+        return getenv(
+            "DATABASE_URL",
+            "sqlite:///./data/chat_api.db",
+        )
+
     # 提示词模板的地址
     @property
     def PROMPTS_DIR(self) -> str:

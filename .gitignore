@@ -68,3 +68,6 @@ for
 __pycache__/
 *.pyc
 .qoder/
+
+# Local relational database runtime
+data/
