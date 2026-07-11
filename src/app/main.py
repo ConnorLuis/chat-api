@@ -144,9 +144,14 @@ app.include_router(
     kb_router,
     dependencies=protected_dependencies,
 )
+openai_dependencies = [
+    *protected_dependencies,
+    Depends(enforce_daily_token_quota),
+]
+
 app.include_router(
     openai_compat_router,
-    dependencies=protected_dependencies,
+    dependencies=openai_dependencies,
 )
 app.include_router(
     conversations_router,
