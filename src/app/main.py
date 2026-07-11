@@ -12,6 +12,9 @@ from src.app.api.openai_compat import (
 from src.app.api.conversations import (
     router as conversations_router,
 )
+from src.app.api.usage import (
+    router as usage_router,
+)
 from src.app.core.logging import install_logging_middleware, setup_logging
 
 # # 项目启动时初始化日志
@@ -42,3 +45,4 @@ app.include_router(run_router)
 app.include_router(kb_router)
 app.include_router(openai_compat_router)
 app.include_router(conversations_router)
+app.include_router(usage_router)

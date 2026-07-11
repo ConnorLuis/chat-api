@@ -73,13 +73,76 @@ def provider_model(
 engine_model = provider_model
 
 
+def decimal_to_json(
+    value,
+) -> str | None:
+    if value is None:
+        return None
+
+    return format(value, "f")
+
+
+def build_cost_payload(
+    cost_record,
+) -> dict | None:
+    if cost_record is None:
+        return None
+
+    return {
+        "pricing_key": (
+            cost_record.pricing_key
+        ),
+        "matched_pricing_key": (
+            cost_record.matched_pricing_key
+        ),
+        "pricing_version": (
+            cost_record.pricing_version
+        ),
+        "currency": cost_record.currency,
+        "unit_tokens": (
+            cost_record.unit_tokens
+        ),
+        "cost_status": (
+            cost_record.cost_status
+        ),
+        "prompt_price_per_unit": (
+            decimal_to_json(
+                cost_record
+                .prompt_price_per_unit
+            )
+        ),
+        "completion_price_per_unit": (
+            decimal_to_json(
+                cost_record
+                .completion_price_per_unit
+            )
+        ),
+        "prompt_cost": (
+            decimal_to_json(
+                cost_record.prompt_cost
+            )
+        ),
+        "completion_cost": (
+            decimal_to_json(
+                cost_record.completion_cost
+            )
+        ),
+        "estimated_cost": (
+            decimal_to_json(
+                cost_record.estimated_cost
+            )
+        ),
+    }
+
+
 def build_usage_payload(
     *,
     request_id: str | None,
     status: str,
     snapshot,
+    cost_record=None,
 ) -> dict:
-    """构造同步/流式共享的 usage accounting payload."""
+    """构造同步/流式共享的 usage/cost payload."""
 
     return {
         "request_id": request_id,
@@ -95,6 +158,9 @@ def build_usage_payload(
         ),
         "total_tokens": (
             snapshot.total_tokens
+        ),
+        "cost": build_cost_payload(
+            cost_record
         ),
     }
 
@@ -560,7 +626,7 @@ def chat(req: Request, body: Annotated[ChatRequest, Body(openapi_examples=CHAT_O
     )
 
     try:
-        usage_record = (
+        usage_result = (
             persist_sync_exchange_and_usage(
                 session_factory=(
                     get_session_factory()
@@ -715,27 +781,18 @@ def chat(req: Request, body: Annotated[ChatRequest, Body(openapi_examples=CHAT_O
         "rag": rag_meta,
         "context_chars": context_chars,
         "rag_error": rag_error,
-        "usage": {
-            "request_id": (
-                usage_record.request_id
+        "usage": build_usage_payload(
+            request_id=(
+                usage_result.request_id
             ),
-            "status": (
+            status=(
                 USAGE_STATUS_SUCCEEDED
             ),
-            "usage_source": (
-                usage_snapshot.usage_source
+            snapshot=usage_snapshot,
+            cost_record=(
+                usage_result.usage_cost
             ),
-            "prompt_tokens": (
-                usage_snapshot.prompt_tokens
-            ),
-            "completion_tokens": (
-                usage_snapshot
-                .completion_tokens
-            ),
-            "total_tokens": (
-                usage_snapshot.total_tokens
-            ),
-        },
+        ),
     }
 
     # 打印日志：便于后端监控
@@ -1424,6 +1481,12 @@ async def chat_stream(
                         snapshot=(
                             failure_snapshot
                         ),
+                        cost_record=(
+                            failure_record.usage_cost
+                            if failure_record
+                            is not None
+                            else None
+                        ),
                     )
                 )
 
@@ -1600,7 +1663,7 @@ async def chat_stream(
         try:
             # Provider 已完整结束后，即使客户端此刻断开，
             # 也等待原子持久化完成，避免提交结果不确定。
-            usage_record = await asyncio.shield(
+            usage_result = await asyncio.shield(
                 persistence_task
             )
 
@@ -1698,6 +1761,12 @@ async def chat_stream(
                     USAGE_STATUS_PERSISTENCE_FAILED
                 ),
                 snapshot=usage_snapshot,
+                cost_record=(
+                    failure_record.usage_cost
+                    if failure_record
+                    is not None
+                    else None
+                ),
             )
 
             yield sse_event(
@@ -1796,6 +1865,12 @@ async def chat_stream(
                     USAGE_STATUS_PERSISTENCE_FAILED
                 ),
                 snapshot=usage_snapshot,
+                cost_record=(
+                    failure_record.usage_cost
+                    if failure_record
+                    is not None
+                    else None
+                ),
             )
 
             if usage_record_error is not None:
@@ -1833,12 +1908,15 @@ async def chat_stream(
             "token_events": token_events,
             **build_usage_payload(
                 request_id=(
-                    usage_record.request_id
+                    usage_result.request_id
                 ),
                 status=(
                     USAGE_STATUS_SUCCEEDED
                 ),
                 snapshot=usage_snapshot,
+                cost_record=(
+                    usage_result.usage_cost
+                ),
             ),
             "prompt_id": (
                 prompt_id

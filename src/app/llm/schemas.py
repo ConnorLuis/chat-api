@@ -107,6 +107,27 @@ class RagMetadata(BaseModel):
     vector_weight: float = 0.0
     lexical_weight: float = 0.0
 
+class CostMetadata(BaseModel):
+    pricing_key: str
+    matched_pricing_key: str | None = None
+    pricing_version: str
+    currency: str
+    unit_tokens: int
+
+    cost_status: Literal[
+        "estimated",
+        "unknown_price",
+        "usage_unavailable",
+    ]
+
+    prompt_price_per_unit: str | None = None
+    completion_price_per_unit: str | None = None
+
+    prompt_cost: str | None = None
+    completion_cost: str | None = None
+    estimated_cost: str | None = None
+
+
 class UsageMetadata(BaseModel):
     request_id: str
     status: Literal[
@@ -123,6 +144,7 @@ class UsageMetadata(BaseModel):
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
     total_tokens: int | None = None
+    cost: CostMetadata | None = None
 
 
 # 封装响应的元信息（引擎类型、模型名、响应耗时），作为 ChatResponse 的可选字段

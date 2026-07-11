@@ -8,6 +8,12 @@ from .errors import (
     InvalidMessageRoleError,
     MessageNotFoundError,
 )
+from .usage_cost_service import (
+    UsageCostService,
+)
+from .usage_query_service import (
+    UsageQueryService,
+)
 from .usage_service import (
     ALLOWED_USAGE_SOURCES,
     ALLOWED_USAGE_STATUSES,
@@ -33,5 +39,7 @@ __all__ = [
     "USAGE_STATUS_PERSISTENCE_FAILED",
     "USAGE_STATUS_PROVIDER_FAILED",
     "USAGE_STATUS_SUCCEEDED",
+    "UsageCostService",
+    "UsageQueryService",
     "UsageService",
 ]

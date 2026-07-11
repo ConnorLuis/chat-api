@@ -8,6 +8,7 @@ from src.app.db.base import Base
 from src.app.db.models import (
     Conversation,
     Message,
+    UsageCost,
     UsageRecord,
 )
 from src.app.db.session import (
@@ -16,6 +17,7 @@ from src.app.db.session import (
 )
 from src.app.services import (
     ConversationService,
+    UsageCostService,
     UsageService,
 )
 
@@ -23,6 +25,7 @@ from src.app.services import (
 # 保证模型在 create_all 前注册。
 assert Conversation.__tablename__ == "conversations"
 assert Message.__tablename__ == "messages"
+assert UsageCost.__tablename__ == "usage_costs"
 assert UsageRecord.__tablename__ == "usage_records"
 
 
@@ -87,5 +90,14 @@ def usage_service(
     db_session: Session,
 ) -> UsageService:
     return UsageService(
+        db_session
+    )
+
+
+@pytest.fixture
+def usage_cost_service(
+    db_session: Session,
+) -> UsageCostService:
+    return UsageCostService(
         db_session
     )

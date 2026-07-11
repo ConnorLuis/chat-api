@@ -86,6 +86,14 @@ class Settings:
             )
         )
 
+    # 版本化 token pricing catalog
+    @property
+    def PRICING_CATALOG_PATH(self) -> str:
+        return getenv(
+            "PRICING_CATALOG_PATH",
+            "config/pricing_catalog.json",
+        )
+
     # 提示词模板的地址
     @property
     def PROMPTS_DIR(self) -> str:
