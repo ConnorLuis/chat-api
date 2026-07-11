@@ -1,3 +1,4 @@
+import asyncio
 import time
 from typing import Annotated
 from fastapi import Body
@@ -8,12 +9,25 @@ from src.app.core.logging import get_trace_id  # 链路追踪ID
 from src.app.llm.prompt_registry import PromptRegistry, ensure_system_prompt
 from src.app.llm.run_logger import append_jsonl
 from src.app.core.settings import settings
+from src.app.db.session import (
+    get_session_factory,
+)
+from src.app.conversations import (
+    ContextMessage,
+    build_context_window,
+    load_conversation_history,
+    persist_conversation_exchange,
+)
+from src.app.services import (
+    ConversationNotFoundError,
+)
 from src.app.llm.schemas import ChatRequest, ChatResponse, ErrorResponse, RagMetadata, Citation  # 请求/响应模型
 from src.app.llm.providers import (
     build_provider_request,
     get_chat_provider,
 )
 from fastapi.responses import StreamingResponse # 流式响应
+from starlette.concurrency import run_in_threadpool
 from src.app.core.sse import sse_event # SSE格式生成函数
 from src.app.rag.factory import get_rag_backend
 
@@ -185,8 +199,32 @@ def _last_user_text(messages) -> str | None:
              },
 )
 def chat(req: Request, body: Annotated[ChatRequest, Body(openapi_examples=CHAT_OPENAPI_EXAMPLES)]):
-    # 从请求上下文获取trace ID（链路追踪）
+    # 从请求上下文获取 trace ID。
     trace_id = get_trace_id(req)
+
+    conversation_id = body.conversation_id
+    history_messages: tuple[ContextMessage, ...] = ()
+
+    # 仅显式传入 conversation_id 时启用持久化会话。
+    # 使用短 Session 读取，Provider 调用期间不持有数据库连接。
+    if conversation_id is not None:
+        try:
+            snapshot = load_conversation_history(
+                session_factory=get_session_factory(),
+                conversation_id=conversation_id,
+                limit=(
+                    settings
+                    .CONVERSATION_HISTORY_FETCH_LIMIT
+                ),
+            )
+            history_messages = snapshot.messages
+
+        except ConversationNotFoundError as exc:
+            raise HTTPException(
+                status_code=404,
+                detail="Conversation not found",
+            ) from exc
+
     # 通过统一 ProviderFactory 获取本次请求的模型 Provider。
     provider = get_chat_provider(body.provider)
     active_provider = provider.name
@@ -198,7 +236,10 @@ def chat(req: Request, body: Annotated[ChatRequest, Body(openapi_examples=CHAT_O
     prompt_version = body.prompt_version or "v1"
     prompt_vars = body.prompt_vars or {}
 
-    messages = body.messages
+    # body.messages 永远表示本次新增的显式消息，
+    # 持久化历史由服务端读取。
+    current_messages = list(body.messages)
+    messages = current_messages
     system_text = None
     if prompt_id:
         template = prompt_registry.get(prompt_id, prompt_version)
@@ -266,8 +307,37 @@ def chat(req: Request, body: Annotated[ChatRequest, Body(openapi_examples=CHAT_O
     if context:
         parts.append(context)
     final_system_text = "\n\n".join(parts) if parts else None
+    context_window = None
+
+    if conversation_id is not None:
+        context_window = build_context_window(
+            history=history_messages,
+            current=current_messages,
+            system_text=final_system_text,
+            max_turns=(
+                settings
+                .CONVERSATION_HISTORY_MAX_TURNS
+            ),
+            token_budget=(
+                settings
+                .CONVERSATION_CONTEXT_TOKEN_BUDGET
+            ),
+        )
+
+        messages = list(
+            context_window.messages
+        )
+    else:
+        messages = current_messages
+
+    # PromptHub / RAG 自动 system prompt 只参与当前 Provider
+    # 请求，不写入 Conversation Message 表。
     if final_system_text:
-        messages = ensure_system_prompt(messages, final_system_text)
+        messages = ensure_system_prompt(
+            messages,
+            final_system_text,
+        )
+
     provider_request = build_provider_request(
         messages,
         model=body.model,
@@ -288,6 +358,74 @@ def chat(req: Request, body: Annotated[ChatRequest, Body(openapi_examples=CHAT_O
             provider_response.model
             or active_model
         )
+
+        # Provider 完整成功后才保存本轮消息。
+        # request messages + assistant 在一个事务内原子提交。
+        if conversation_id is not None:
+            try:
+                persist_conversation_exchange(
+                    session_factory=(
+                        get_session_factory()
+                    ),
+                    conversation_id=conversation_id,
+                    request_messages=[
+                        ContextMessage(
+                            role=message.role,
+                            content=message.content,
+                        )
+                        for message in current_messages
+                    ],
+                    assistant_content=answer,
+                    provider=active_provider,
+                    model=active_model,
+                    assistant_token_count=(
+                        provider_response
+                        .usage
+                        .completion_tokens
+                        if (
+                            provider_response.usage
+                            is not None
+                        )
+                        else None
+                    ),
+                )
+
+            except ConversationNotFoundError as exc:
+                # Conversation 可能在 Provider 调用期间被并发删除。
+                raise HTTPException(
+                    status_code=404,
+                    detail=(
+                        "Conversation not found"
+                    ),
+                ) from exc
+
+            except Exception as exc:
+                latency_ms = int(
+                    (
+                        time.perf_counter()
+                        - start
+                    )
+                    * 1000
+                )
+
+                err = build_error(
+                    trace_id,
+                    active_provider,
+                    active_model,
+                    latency_ms,
+                    (
+                        "conversation persistence "
+                        f"failed: {exc}"
+                    ),
+                )
+
+                raise HTTPException(
+                    status_code=500,
+                    detail=err,
+                ) from exc
+    except HTTPException:
+        raise
+
     except Exception as e:
         latency_ms = int((time.perf_counter() - start) * 1000)
         err = build_error(trace_id, active_provider, active_model, latency_ms, f"{active_provider} failed: {str(e)}")
@@ -346,7 +484,13 @@ def chat(req: Request, body: Annotated[ChatRequest, Body(openapi_examples=CHAT_O
     }
     append_jsonl(settings.RUN_LOG_PATH, record)
     # 返回符合ChatResponse模型的响应
-    return ChatResponse(trace_id=trace_id, session_id=body.session_id, answer=answer, metadata=metadata)
+    return ChatResponse(
+        trace_id=trace_id,
+        session_id=body.session_id,
+        conversation_id=conversation_id,
+        answer=answer,
+        metadata=metadata,
+    )
 
 """实现了标准化、可监控、可异常处理的 SSE 流式响应
     标准化的SSE响应：
@@ -402,33 +546,103 @@ def chat(req: Request, body: Annotated[ChatRequest, Body(openapi_examples=CHAT_O
                     }
             },
 )
-async def chat_stream(req: Request, body: Annotated[ChatRequest, Body(openapi_examples=CHAT_OPENAPI_EXAMPLES)]):
-    # 从请求上下文获取trace ID（链路追踪）
+async def chat_stream(
+    req: Request,
+    body: Annotated[
+        ChatRequest,
+        Body(
+            openapi_examples=(
+                CHAT_OPENAPI_EXAMPLES
+            )
+        ),
+    ],
+):
     trace_id = get_trace_id(req)
-    # 通过统一 ProviderFactory 获取本次请求的模型 Provider。
-    provider = get_chat_provider(body.provider)
 
-    # 定义异步生成器函数（核心：逐段产生响应数据）
+    conversation_id = body.conversation_id
+    history_messages: tuple[
+        ContextMessage,
+        ...,
+    ] = ()
+
+    # 在 SSE 响应建立前校验 Conversation，
+    # 不存在时可以正常返回 HTTP 404。
+    if conversation_id is not None:
+        try:
+            snapshot = await run_in_threadpool(
+                load_conversation_history,
+                session_factory=(
+                    get_session_factory()
+                ),
+                conversation_id=conversation_id,
+                limit=(
+                    settings
+                    .CONVERSATION_HISTORY_FETCH_LIMIT
+                ),
+            )
+
+            history_messages = (
+                snapshot.messages
+            )
+
+        except ConversationNotFoundError as exc:
+            raise HTTPException(
+                status_code=404,
+                detail="Conversation not found",
+            ) from exc
+
+    provider = get_chat_provider(
+        body.provider
+    )
+
     async def gen():
-        start = time.perf_counter() # 记录开始时间（统计耗时）
-        active_provider = provider.name
-        active_model = provider_model(provider, body.model)
+        start = time.perf_counter()
 
-        messages = body.messages
-        system_text = None
+        active_provider = provider.name
+        active_model = provider_model(
+            provider,
+            body.model,
+        )
+
+        # body.messages 只表示本次显式提交的消息。
+        current_messages = list(
+            body.messages
+        )
+        messages = current_messages
 
         prompt_id = body.prompt_id
-        prompt_version = body.prompt_version or "v1"
-        prompt_vars = body.prompt_vars or {}
+        prompt_version = (
+            body.prompt_version
+            or "v1"
+        )
+        prompt_vars = (
+            body.prompt_vars
+            or {}
+        )
+
+        system_text = None
 
         if prompt_id:
-            template = prompt_registry.get(prompt_id, prompt_version)
-            system_text = prompt_registry.render(template, prompt_vars)
+            template = prompt_registry.get(
+                prompt_id,
+                prompt_version,
+            )
 
-        rag_enabled = bool(body.use_kb)
-        top_k = int(body.kb_top_k or settings.KB_TOP_K)
+            system_text = (
+                prompt_registry.render(
+                    template,
+                    prompt_vars,
+                )
+            )
 
-        hits_list = []
+        rag_enabled = bool(
+            body.use_kb
+        )
+        top_k = int(
+            body.kb_top_k
+            or settings.KB_TOP_K
+        )
+
         hits = 0
         citations = []
         context = None
@@ -436,26 +650,33 @@ async def chat_stream(req: Request, body: Annotated[ChatRequest, Body(openapi_ex
         rag_error = None
         candidate_k = 0
 
-        # 统一形状：永远有 rag（use_kb=false 时 enabled=false + top_k=0）
         rag_dict = {
             "enabled": rag_enabled,
-            "top_k": top_k if rag_enabled else 0,
+            "top_k": (
+                top_k
+                if rag_enabled
+                else 0
+            ),
             "hits": 0,
             "context_chars": 0,
             "candidate_k": 0,
             "error": None,
             **rag_extra_for_stream({
-                "backend": settings.RAG_BACKEND if rag_enabled else None,
+                "backend": (
+                    settings.RAG_BACKEND
+                    if rag_enabled
+                    else None
+                ),
             }),
         }
+
         try:
             if rag_enabled:
-                query = _last_user_text(messages)
+                query = _last_user_text(
+                    current_messages
+                )
 
                 if not query:
-                    context = None
-                    hits = 0
-                    citations = []
                     rag_dict.update({
                         "enabled": True,
                         "top_k": top_k,
@@ -463,32 +684,64 @@ async def chat_stream(req: Request, body: Annotated[ChatRequest, Body(openapi_ex
                         "candidate_k": 0,
                         "error": None,
                         **rag_extra_for_stream({
-                            "backend": settings.RAG_BACKEND,
+                            "backend": (
+                                settings.RAG_BACKEND
+                            ),
                         }),
                     })
+
                 else:
-                    rag_backend = get_rag_backend()
-                    rag_result = rag_backend.build_context(query=query, top_k=top_k)
+                    rag_backend = (
+                        get_rag_backend()
+                    )
 
-                    citations = to_llm_citations(rag_result.citations)
+                    rag_result = (
+                        rag_backend
+                        .build_context(
+                            query=query,
+                            top_k=top_k,
+                        )
+                    )
+
+                    citations = (
+                        to_llm_citations(
+                            rag_result.citations
+                        )
+                    )
                     hits = rag_result.hits
-                    candidate_k = rag_result.candidate_k
+                    candidate_k = (
+                        rag_result.candidate_k
+                    )
 
-                    if not rag_result.hits:
-                        context = None
-                    else:
-                        context = build_rag_prompt_context(rag_result.context)
+                    if rag_result.hits:
+                        context = (
+                            build_rag_prompt_context(
+                                rag_result.context
+                            )
+                        )
 
                     rag_dict.update({
                         "enabled": True,
-                        "top_k": rag_result.top_k,
-                        "hits": rag_result.hits,
-                        "candidate_k": rag_result.candidate_k,
-                        "error": rag_result.error,
-                        **rag_extra_for_stream(rag_result.extra),
+                        "top_k": (
+                            rag_result.top_k
+                        ),
+                        "hits": (
+                            rag_result.hits
+                        ),
+                        "candidate_k": (
+                            rag_result
+                            .candidate_k
+                        ),
+                        "error": (
+                            rag_result.error
+                        ),
+                        **rag_extra_for_stream(
+                            rag_result.extra
+                        ),
                     })
-        except Exception as e:
-            rag_error = str(e)
+
+        except Exception as exc:
+            rag_error = str(exc)
             citations = []
             hits = 0
             context = None
@@ -500,137 +753,543 @@ async def chat_stream(req: Request, body: Annotated[ChatRequest, Body(openapi_ex
                 "hits": 0,
                 "error": rag_error,
                 **rag_extra_for_stream({
-                    "backend": settings.RAG_BACKEND,
+                    "backend": (
+                        settings.RAG_BACKEND
+                    ),
                 }),
             })
 
-        context_chars = len(context) if context else 0
-        rag_dict["context_chars"] = context_chars
-        parts = []
-        if system_text:
-            parts.append(system_text)
-        if context:
-            parts.append(context)
-        final_system_text = "\n\n".join(parts) if parts else None
-        if final_system_text:
-            messages = ensure_system_prompt(messages, final_system_text)
-
-        provider_request = build_provider_request(
-            messages,
-            model=body.model,
-            temperature=body.temperature,
-            top_p=body.top_p,
-            max_tokens=body.max_tokens,
+        context_chars = (
+            len(context)
+            if context
+            else 0
         )
 
-        # 把 trace / provider 发出去，前端好做初始化
+        rag_dict[
+            "context_chars"
+        ] = context_chars
+
+        parts: list[str] = []
+
+        if system_text:
+            parts.append(system_text)
+
+        if context:
+            parts.append(context)
+
+        final_system_text = (
+            "\n\n".join(parts)
+            if parts
+            else None
+        )
+
+        context_window = None
+
+        if conversation_id is not None:
+            context_window = (
+                build_context_window(
+                    history=history_messages,
+                    current=current_messages,
+                    system_text=(
+                        final_system_text
+                    ),
+                    max_turns=(
+                        settings
+                        .CONVERSATION_HISTORY_MAX_TURNS
+                    ),
+                    token_budget=(
+                        settings
+                        .CONVERSATION_CONTEXT_TOKEN_BUDGET
+                    ),
+                )
+            )
+
+            messages = list(
+                context_window.messages
+            )
+
+        if final_system_text:
+            messages = ensure_system_prompt(
+                messages,
+                final_system_text,
+            )
+
+        provider_request = (
+            build_provider_request(
+                messages,
+                model=body.model,
+                temperature=(
+                    body.temperature
+                ),
+                top_p=body.top_p,
+                max_tokens=(
+                    body.max_tokens
+                ),
+            )
+        )
+
+        context_window_payload = (
+            {
+                "history_messages": (
+                    context_window
+                    .history_messages
+                ),
+                "current_messages": (
+                    context_window
+                    .current_messages
+                ),
+                "truncated": (
+                    context_window
+                    .truncated
+                ),
+                "estimated_tokens": (
+                    context_window
+                    .estimated_tokens
+                ),
+            }
+            if context_window is not None
+            else None
+        )
+
         meta = {
             "trace_id": trace_id,
+            "conversation_id": (
+                conversation_id
+            ),
             "provider": active_provider,
             "model": active_model,
-            "prompt_id": prompt_id or "none",
-            "prompt_version": prompt_version if prompt_id else "none",
+            "prompt_id": (
+                prompt_id
+                or "none"
+            ),
+            "prompt_version": (
+                prompt_version
+                if prompt_id
+                else "none"
+            ),
+            "context_window": (
+                context_window_payload
+            ),
             "rag": rag_dict,
         }
-        yield sse_event("meta", meta)
 
+        yield sse_event(
+            "meta",
+            meta,
+        )
+
+        output_parts: list[str] = []
         output_chars = 0
         token_events = 0
+        provider_usage = None
+
+        stream_iterator = (
+            provider
+            .stream(provider_request)
+            .__aiter__()
+        )
 
         try:
-            # Provider 统一返回 ProviderChatChunk。
-            # 空 delta 可能只携带 usage / finish_reason，不能输出为空 token 事件。
-            async for chunk in provider.stream(provider_request):
-                if chunk.provider:
-                    active_provider = chunk.provider
-                if chunk.model:
-                    active_model = chunk.model
+            try:
+                async for chunk in stream_iterator:
+                    if chunk.provider:
+                        active_provider = (
+                            chunk.provider
+                        )
 
-                token = chunk.delta
-                if not token:
-                    continue
+                    if chunk.model:
+                        active_model = (
+                            chunk.model
+                        )
 
-                token_events += 1
-                output_chars += len(token)
-                yield sse_event("token", token)
+                    if chunk.usage is not None:
+                        provider_usage = (
+                            chunk.usage
+                        )
 
-            # 计算耗时（毫秒）
-            latency_ms = int((time.perf_counter() - start) * 1000)
+                    token = chunk.delta
 
-            citations_payload = [c.model_dump() if hasattr(c, "model_dump") else c for c in citations]
+                    # 空字符串可能只是 terminal /
+                    # usage chunk；单空格必须保留。
+                    if token == "":
+                        continue
 
-            # 推送使用统计（usage事件）：包含性能、模型、token数等
-            usage = {
-                "trace_id": trace_id,
-                "provider": active_provider,
-                "model": active_model,
-                "latency_ms": latency_ms,
-                "token_events": token_events,
-                "prompt_id": prompt_id or "none",
-                "prompt_version": prompt_version if prompt_id else "none",
-                "rag": {
+                    token_events += 1
+                    output_chars += len(token)
+                    output_parts.append(token)
+
+                    yield sse_event(
+                        "token",
+                        token,
+                    )
+
+            except asyncio.CancelledError:
+                # 客户端断开时不保存部分回复，
+                # 并把取消继续传播给 ASGI server。
+                raise
+
+            except Exception as exc:
+                latency_ms = int(
+                    (
+                        time.perf_counter()
+                        - start
+                    )
+                    * 1000
+                )
+
+                err = build_error(
+                    trace_id,
+                    active_provider,
+                    active_model,
+                    latency_ms,
+                    (
+                        f"{active_provider} "
+                        f"failed: {exc}"
+                    ),
+                )
+
+                err[
+                    "conversation_id"
+                ] = conversation_id
+                err[
+                    "context_window"
+                ] = context_window_payload
+                err["prompt_id"] = (
+                    prompt_id
+                    or "none"
+                )
+                err["prompt_version"] = (
+                    prompt_version
+                    if prompt_id
+                    else "none"
+                )
+                err["rag"] = {
                     **rag_dict,
-                    "citations": citations_payload,
-                    "error": rag_error or rag_dict.get("error"),
-                },
-            }
-            yield sse_event("usage", usage)
-            yield sse_event("done", "[DONE]") # 推送结束事件，前端停止接收
+                    "citations": [
+                        (
+                            citation.model_dump()
+                            if hasattr(
+                                citation,
+                                "model_dump",
+                            )
+                            else citation
+                        )
+                        for citation
+                        in citations
+                    ],
+                    "error": str(exc),
+                }
 
-            append_jsonl(settings.RUN_LOG_PATH, {
-                "trace_id": trace_id,
-                "mode": "stream",
-                "provider": active_provider,
-                "model": active_model,
-                "prompt_id": prompt_id,
-                "prompt_version": prompt_version if prompt_id else "none",
-                "latency_ms": latency_ms,
-                "token_events": token_events,
-                "prompt_chars": len(system_text) if system_text else 0,
-                "output_chars": output_chars,
-                "rag_enabled": rag_enabled,
-                "kb_top_k":top_k,
-                "rag_hits": hits,
-                "context_chars": context_chars,
-                "rag_error": rag_error,
-                "citations_count": len(citations)
-            })
+                append_jsonl(
+                    settings.RUN_LOG_PATH,
+                    {
+                        "trace_id": trace_id,
+                        "conversation_id": (
+                            conversation_id
+                        ),
+                        "mode": "stream",
+                        "provider": (
+                            active_provider
+                        ),
+                        "model": active_model,
+                        "prompt_id": prompt_id,
+                        "prompt_version": (
+                            prompt_version
+                            if prompt_id
+                            else "none"
+                        ),
+                        "latency_ms": (
+                            latency_ms
+                        ),
+                        "token_events": (
+                            token_events
+                        ),
+                        "prompt_chars": (
+                            len(system_text)
+                            if system_text
+                            else 0
+                        ),
+                        "output_chars": (
+                            output_chars
+                        ),
+                        "temperature": (
+                            body.temperature
+                        ),
+                        "top_p": body.top_p,
+                        "max_tokens": (
+                            body.max_tokens
+                        ),
+                        "rag_enabled": (
+                            rag_enabled
+                        ),
+                        "kb_top_k": top_k,
+                        "rag_hits": hits,
+                        "context_chars": (
+                            context_chars
+                        ),
+                        "rag_error": rag_error,
+                        "error": str(exc),
+                    },
+                )
 
-        except Exception as e:
-            latency_ms = int((time.perf_counter() - start) * 1000)
-            err = build_error(trace_id, active_provider, active_model, latency_ms, f"{active_provider} failed: {str(e)}")
-            err["prompt_id"] = prompt_id or "none"
-            err["prompt_version"] = prompt_version if prompt_id else "none"
-            err["rag"] = {
+                yield sse_event(
+                    "error",
+                    err,
+                )
+
+                return
+
+        finally:
+            close_stream = getattr(
+                stream_iterator,
+                "aclose",
+                None,
+            )
+
+            if callable(close_stream):
+                try:
+                    await close_stream()
+
+                except asyncio.CancelledError:
+                    raise
+
+                except Exception:
+                    # 清理失败不能覆盖原始 Provider
+                    # 错误或客户端取消。
+                    pass
+
+        assistant_content = "".join(
+            output_parts
+        )
+
+        # Provider 完整结束后才进入持久化。
+        # 持久化成功后才能发送 usage/done。
+        if conversation_id is not None:
+            try:
+                assistant_token_count = (
+                    getattr(
+                        provider_usage,
+                        "completion_tokens",
+                        None,
+                    )
+                    if provider_usage
+                    is not None
+                    else None
+                )
+
+                await run_in_threadpool(
+                    persist_conversation_exchange,
+                    session_factory=(
+                        get_session_factory()
+                    ),
+                    conversation_id=(
+                        conversation_id
+                    ),
+                    request_messages=[
+                        ContextMessage(
+                            role=message.role,
+                            content=message.content,
+                        )
+                        for message
+                        in current_messages
+                    ],
+                    assistant_content=(
+                        assistant_content
+                    ),
+                    provider=active_provider,
+                    model=active_model,
+                    assistant_token_count=(
+                        assistant_token_count
+                    ),
+                )
+
+            except asyncio.CancelledError:
+                raise
+
+            except ConversationNotFoundError as exc:
+                latency_ms = int(
+                    (
+                        time.perf_counter()
+                        - start
+                    )
+                    * 1000
+                )
+
+                err = build_error(
+                    trace_id,
+                    active_provider,
+                    active_model,
+                    latency_ms,
+                    "Conversation not found",
+                )
+
+                err[
+                    "conversation_id"
+                ] = conversation_id
+                err[
+                    "context_window"
+                ] = context_window_payload
+                err["rag"] = {
+                    **rag_dict,
+                    "citations": [],
+                    "error": str(exc),
+                }
+
+                yield sse_event(
+                    "error",
+                    err,
+                )
+
+                return
+
+            except Exception as exc:
+                latency_ms = int(
+                    (
+                        time.perf_counter()
+                        - start
+                    )
+                    * 1000
+                )
+
+                err = build_error(
+                    trace_id,
+                    active_provider,
+                    active_model,
+                    latency_ms,
+                    (
+                        "conversation persistence "
+                        f"failed: {exc}"
+                    ),
+                )
+
+                err[
+                    "conversation_id"
+                ] = conversation_id
+                err[
+                    "context_window"
+                ] = context_window_payload
+                err["rag"] = {
+                    **rag_dict,
+                    "citations": [],
+                    "error": str(exc),
+                }
+
+                yield sse_event(
+                    "error",
+                    err,
+                )
+
+                return
+
+        latency_ms = int(
+            (
+                time.perf_counter()
+                - start
+            )
+            * 1000
+        )
+
+        citations_payload = [
+            (
+                citation.model_dump()
+                if hasattr(
+                    citation,
+                    "model_dump",
+                )
+                else citation
+            )
+            for citation in citations
+        ]
+
+        usage = {
+            "trace_id": trace_id,
+            "conversation_id": (
+                conversation_id
+            ),
+            "provider": active_provider,
+            "model": active_model,
+            "latency_ms": latency_ms,
+            "token_events": token_events,
+            "prompt_id": (
+                prompt_id
+                or "none"
+            ),
+            "prompt_version": (
+                prompt_version
+                if prompt_id
+                else "none"
+            ),
+            "context_window": (
+                context_window_payload
+            ),
+            "rag": {
                 **rag_dict,
-                "citations": citations_payload if "citations_payload" in locals() else [],
-                "error": str(e),
-            }
-            # 异常时返回带trace_id的错误信息
-            yield sse_event("error", err)
-            # 流式异常也用 error 级别
-            append_jsonl(settings.RUN_LOG_PATH, {
+                "citations": (
+                    citations_payload
+                ),
+                "error": (
+                    rag_error
+                    or rag_dict.get(
+                        "error"
+                    )
+                ),
+            },
+        }
+
+        yield sse_event(
+            "usage",
+            usage,
+        )
+
+        yield sse_event(
+            "done",
+            "[DONE]",
+        )
+
+        append_jsonl(
+            settings.RUN_LOG_PATH,
+            {
                 "trace_id": trace_id,
+                "conversation_id": (
+                    conversation_id
+                ),
                 "mode": "stream",
                 "provider": active_provider,
                 "model": active_model,
                 "prompt_id": prompt_id,
-                "prompt_version": prompt_version if prompt_id else "none",
+                "prompt_version": (
+                    prompt_version
+                    if prompt_id
+                    else "none"
+                ),
                 "latency_ms": latency_ms,
-                "token_events": token_events,
-                "prompt_chars": len(system_text) if system_text else 0,
-                "output_chars": 0,
-                "temperature": body.temperature,
-                "top_p": body.top_p,
-                "max_tokens": body.max_tokens,
-                "rag_enabled": rag_enabled,
+                "token_events": (
+                    token_events
+                ),
+                "prompt_chars": (
+                    len(system_text)
+                    if system_text
+                    else 0
+                ),
+                "output_chars": (
+                    output_chars
+                ),
+                "rag_enabled": (
+                    rag_enabled
+                ),
                 "kb_top_k": top_k,
                 "rag_hits": hits,
-                "context_chars": context_chars,
+                "context_chars": (
+                    context_chars
+                ),
                 "rag_error": rag_error,
-                "error": str(e)
-            })
+                "citations_count": (
+                    len(citations)
+                ),
+            },
+        )
 
-
-    # 返回流式响应，指定媒体类型为纯文本
-    return StreamingResponse(gen(), media_type="text/event-stream")
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+    )

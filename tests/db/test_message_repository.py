@@ -61,6 +61,11 @@ def test_create_get_and_list_messages(
         second.id,
     ]
 
+    assert [
+        message.sequence_no
+        for message in listed
+    ] == [1, 2]
+
 
 def test_delete_message(
     db_session: Session,

@@ -258,3 +258,53 @@ def test_service_rolls_back_when_commit_fails(
     )
 
     assert message_count == 0
+
+
+def test_append_messages_is_atomic_and_ordered(
+    conversation_service: ConversationService,
+):
+    from src.app.services import NewMessage
+
+    conversation = (
+        conversation_service
+        .create_conversation()
+    )
+
+    created = (
+        conversation_service
+        .append_messages(
+            conversation.id,
+            messages=[
+                NewMessage(
+                    role="user",
+                    content="question",
+                ),
+                NewMessage(
+                    role="assistant",
+                    content="answer",
+                    provider="mock",
+                    model="mock-model",
+                ),
+            ],
+        )
+    )
+
+    assert [
+        message.sequence_no
+        for message in created
+    ] == [1, 2]
+
+    stored = (
+        conversation_service
+        .list_messages(
+            conversation.id
+        )
+    )
+
+    assert [
+        message.content
+        for message in stored
+    ] == [
+        "question",
+        "answer",
+    ]

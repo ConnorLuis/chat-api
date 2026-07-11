@@ -58,6 +58,34 @@ class Settings:
             "sqlite:///./data/chat_api.db",
         )
 
+    # Conversation 历史上下文
+    @property
+    def CONVERSATION_HISTORY_MAX_TURNS(self) -> int:
+        return int(
+            getenv(
+                "CONVERSATION_HISTORY_MAX_TURNS",
+                "10",
+            )
+        )
+
+    @property
+    def CONVERSATION_CONTEXT_TOKEN_BUDGET(self) -> int:
+        return int(
+            getenv(
+                "CONVERSATION_CONTEXT_TOKEN_BUDGET",
+                "4096",
+            )
+        )
+
+    @property
+    def CONVERSATION_HISTORY_FETCH_LIMIT(self) -> int:
+        return int(
+            getenv(
+                "CONVERSATION_HISTORY_FETCH_LIMIT",
+                "500",
+            )
+        )
+
     # 提示词模板的地址
     @property
     def PROMPTS_DIR(self) -> str:

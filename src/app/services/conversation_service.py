@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
+from dataclasses import dataclass
+
 from sqlalchemy.orm import Session
 
-from src.app.db.models import Conversation, Message
+from src.app.db.models import (
+    Conversation,
+    Message,
+)
 from src.app.db.repositories import (
     ConversationRepository,
     MessageRepository,
@@ -21,6 +27,18 @@ ALLOWED_MESSAGE_ROLES = frozenset({
     "user",
     "assistant",
 })
+
+
+@dataclass(
+    frozen=True,
+    slots=True,
+)
+class NewMessage:
+    role: str
+    content: str
+    provider: str | None = None
+    model: str | None = None
+    token_count: int | None = None
 
 
 class ConversationService:
@@ -52,7 +70,8 @@ class ConversationService:
 
         if len(normalized) > 200:
             raise ValueError(
-                "title must contain at most 200 characters"
+                "title must contain at most "
+                "200 characters"
             )
 
         return normalized
@@ -93,32 +112,90 @@ class ConversationService:
     ) -> None:
         if limit < 1 or limit > max_limit:
             raise ValueError(
-                f"limit must be between 1 and {max_limit}"
+                f"limit must be between 1 and "
+                f"{max_limit}"
             )
 
         if offset < 0:
             raise ValueError(
-                "offset must be greater than or equal to 0"
+                "offset must be greater than "
+                "or equal to 0"
             )
+
+    @classmethod
+    def _normalize_message(
+        cls,
+        message: NewMessage,
+    ) -> NewMessage:
+        role = message.role.strip().lower()
+
+        if role not in ALLOWED_MESSAGE_ROLES:
+            supported = ", ".join(
+                sorted(ALLOWED_MESSAGE_ROLES)
+            )
+
+            raise InvalidMessageRoleError(
+                f"Unsupported message role: "
+                f"{role}. "
+                f"Supported roles: {supported}."
+            )
+
+        if not message.content.strip():
+            raise ValueError(
+                "content must not be empty"
+            )
+
+        if (
+            message.token_count is not None
+            and message.token_count < 0
+        ):
+            raise ValueError(
+                "token_count must be greater than "
+                "or equal to 0"
+            )
+
+        provider = cls._normalize_optional_text(
+            message.provider,
+            field_name="provider",
+            max_length=50,
+            lower=True,
+        )
+
+        model = cls._normalize_optional_text(
+            message.model,
+            field_name="model",
+            max_length=200,
+        )
+
+        return NewMessage(
+            role=role,
+            content=message.content,
+            provider=provider,
+            model=model,
+            token_count=message.token_count,
+        )
 
     def create_conversation(
         self,
         *,
         title: str | None = None,
     ) -> Conversation:
-        normalized_title = self._normalize_title(
-            title
-        )
+        title = self._normalize_title(title)
 
         try:
-            conversation = self.conversations.create(
-                title=normalized_title,
+            conversation = (
+                self.conversations.create(
+                    title=title,
+                )
             )
+
             self.session.commit()
             self.session.refresh(
                 conversation
             )
+
             return conversation
+
         except Exception:
             self.session.rollback()
             raise
@@ -143,9 +220,12 @@ class ConversationService:
             max_limit=200,
         )
 
-        return self.conversations.list_conversations(
-            limit=limit,
-            offset=offset,
+        return (
+            self.conversations
+            .list_conversations(
+                limit=limit,
+                offset=offset,
+            )
         )
 
     def rename_conversation(
@@ -154,21 +234,19 @@ class ConversationService:
         *,
         title: str | None,
     ) -> Conversation:
-        normalized_title = self._normalize_title(
-            title
-        )
+        title = self._normalize_title(title)
 
         try:
             conversation = (
                 self.conversations.update_title(
                     conversation_id,
-                    title=normalized_title,
+                    title=title,
                 )
             )
 
             if conversation is None:
                 raise ConversationNotFoundError(
-                    f"Conversation not found: "
+                    "Conversation not found: "
                     f"{conversation_id}"
                 )
 
@@ -180,6 +258,7 @@ class ConversationService:
             )
 
             return conversation
+
         except Exception:
             self.session.rollback()
             raise
@@ -189,11 +268,76 @@ class ConversationService:
         conversation_id: str,
     ) -> bool:
         try:
-            deleted = self.conversations.delete(
-                conversation_id
+            deleted = (
+                self.conversations.delete(
+                    conversation_id
+                )
             )
+
             self.session.commit()
+
             return deleted
+
+        except Exception:
+            self.session.rollback()
+            raise
+
+    def append_messages(
+        self,
+        conversation_id: str,
+        *,
+        messages: Sequence[NewMessage],
+    ) -> list[Message]:
+        """在一个事务中原子追加多条消息."""
+
+        normalized = [
+            self._normalize_message(message)
+            for message in messages
+        ]
+
+        if not normalized:
+            return []
+
+        try:
+            conversation = (
+                self.conversations.get(
+                    conversation_id
+                )
+            )
+
+            if conversation is None:
+                raise ConversationNotFoundError(
+                    "Conversation not found: "
+                    f"{conversation_id}"
+                )
+
+            created: list[Message] = []
+
+            for item in normalized:
+                created.append(
+                    self.messages.create(
+                        conversation_id=(
+                            conversation_id
+                        ),
+                        role=item.role,
+                        content=item.content,
+                        provider=item.provider,
+                        model=item.model,
+                        token_count=(
+                            item.token_count
+                        ),
+                    )
+                )
+
+            conversation.updated_at = utc_now()
+
+            self.session.commit()
+
+            for message in created:
+                self.session.refresh(message)
+
+            return created
+
         except Exception:
             self.session.rollback()
             raise
@@ -208,88 +352,26 @@ class ConversationService:
         model: str | None = None,
         token_count: int | None = None,
     ) -> Message:
-        normalized_role = role.strip().lower()
-
-        if normalized_role not in ALLOWED_MESSAGE_ROLES:
-            supported = ", ".join(
-                sorted(ALLOWED_MESSAGE_ROLES)
-            )
-            raise InvalidMessageRoleError(
-                f"Unsupported message role: "
-                f"{normalized_role}. "
-                f"Supported roles: {supported}."
-            )
-
-        if not content.strip():
-            raise ValueError(
-                "content must not be empty"
-            )
-
-        if (
-            token_count is not None
-            and token_count < 0
-        ):
-            raise ValueError(
-                "token_count must be greater than "
-                "or equal to 0"
-            )
-
-        normalized_provider = (
-            self._normalize_optional_text(
-                provider,
-                field_name="provider",
-                max_length=50,
-                lower=True,
-            )
-        )
-
-        normalized_model = (
-            self._normalize_optional_text(
-                model,
-                field_name="model",
-                max_length=200,
-            )
-        )
-
-        try:
-            conversation = self.conversations.get(
-                conversation_id
-            )
-
-            if conversation is None:
-                raise ConversationNotFoundError(
-                    f"Conversation not found: "
-                    f"{conversation_id}"
+        created = self.append_messages(
+            conversation_id,
+            messages=[
+                NewMessage(
+                    role=role,
+                    content=content,
+                    provider=provider,
+                    model=model,
+                    token_count=token_count,
                 )
+            ],
+        )
 
-            message = self.messages.create(
-                conversation_id=conversation_id,
-                role=normalized_role,
-                content=content,
-                provider=normalized_provider,
-                model=normalized_model,
-                token_count=token_count,
-            )
-
-            conversation.updated_at = utc_now()
-
-            self.session.commit()
-            self.session.refresh(
-                message
-            )
-
-            return message
-        except Exception:
-            self.session.rollback()
-            raise
+        return created[0]
 
     def get_message(
         self,
         message_id: str,
     ) -> Message | None:
-        return self.messages.get(
-            message_id
-        )
+        return self.messages.get(message_id)
 
     def list_messages(
         self,
@@ -304,11 +386,14 @@ class ConversationService:
             max_limit=500,
         )
 
-        if self.conversations.get(
-            conversation_id
-        ) is None:
+        if (
+            self.conversations.get(
+                conversation_id
+            )
+            is None
+        ):
             raise ConversationNotFoundError(
-                f"Conversation not found: "
+                "Conversation not found: "
                 f"{conversation_id}"
             )
 
@@ -316,6 +401,36 @@ class ConversationService:
             conversation_id,
             limit=limit,
             offset=offset,
+        )
+
+    def list_recent_messages(
+        self,
+        conversation_id: str,
+        *,
+        limit: int,
+    ) -> list[Message]:
+        if limit < 1 or limit > 2000:
+            raise ValueError(
+                "limit must be between 1 and 2000"
+            )
+
+        if (
+            self.conversations.get(
+                conversation_id
+            )
+            is None
+        ):
+            raise ConversationNotFoundError(
+                "Conversation not found: "
+                f"{conversation_id}"
+            )
+
+        return (
+            self.messages
+            .list_recent_by_conversation(
+                conversation_id,
+                limit=limit,
+            )
         )
 
     def delete_message(
@@ -331,8 +446,10 @@ class ConversationService:
                 self.session.commit()
                 return False
 
-            conversation = self.conversations.get(
-                message.conversation_id
+            conversation = (
+                self.conversations.get(
+                    message.conversation_id
+                )
             )
 
             deleted = self.messages.delete(
@@ -345,6 +462,7 @@ class ConversationService:
             self.session.commit()
 
             return deleted
+
         except Exception:
             self.session.rollback()
             raise

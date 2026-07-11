@@ -6,12 +6,16 @@ from typing import TYPE_CHECKING
 from sqlalchemy import (
     CheckConstraint,
     ForeignKey,
-    Index,
     Integer,
     String,
     Text,
+    UniqueConstraint,
 )
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import (
+    Mapped,
+    mapped_column,
+    relationship,
+)
 
 from src.app.db.base import Base
 from src.app.db.types import UTCDateTime
@@ -41,11 +45,16 @@ class Message(Base):
             ),
             name="ck_messages_token_count",
         ),
-        Index(
-            "ix_messages_conversation_created_id",
+        CheckConstraint(
+            "sequence_no >= 1",
+            name="ck_messages_sequence_no",
+        ),
+        UniqueConstraint(
             "conversation_id",
-            "created_at",
-            "id",
+            "sequence_no",
+            name=(
+                "uq_messages_conversation_sequence"
+            ),
         ),
     )
 
@@ -61,6 +70,11 @@ class Message(Base):
             "conversations.id",
             ondelete="CASCADE",
         ),
+        nullable=False,
+    )
+
+    sequence_no: Mapped[int] = mapped_column(
+        Integer,
         nullable=False,
     )
 

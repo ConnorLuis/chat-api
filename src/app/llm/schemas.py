@@ -16,6 +16,16 @@ class ChatMessage(BaseModel):
 class ChatRequest(BaseModel):
     # 会话 ID -> 表示这个字段可以是str类型，也可以是None
     session_id: Optional[str] = Field(default=None, description="client session id for simple memory")
+    # Day6 持久化会话 ID。为空时继续使用原有无状态模式。
+    conversation_id: Optional[str] = Field(
+        default=None,
+        min_length=1,
+        max_length=36,
+        description=(
+            "Server-side persistent conversation id. "
+            "When omitted, chat remains stateless."
+        ),
+    )
     # 消息列表 -> 表示这个字段是一个列表，且列表中的每个元素都必须是ChatMessage类型
     messages: List[ChatMessage]
     # 温度系数，控制AI回复的随机性，默认0.7是常用平衡值
@@ -116,6 +126,8 @@ class ChatResponse(BaseModel):
     trace_id: str
     # 会话 ID -> 和 ChatRequest 中的 session_id 对应，返回客户端传入的会话 ID（如果有），用于维持用户的聊天上下文（比如多轮对话记忆）。
     session_id: Optional[str] = None
+    # Day6 服务端持久化会话 ID；无状态请求返回 None。
+    conversation_id: Optional[str] = None
     # AI 针对用户请求生成的最终回复内容，也是响应中最核心的字段。
     answer: str
     # 定义元数据

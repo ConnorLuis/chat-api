@@ -1,6 +1,7 @@
 from .conversation_service import (
     ALLOWED_MESSAGE_ROLES,
     ConversationService,
+    NewMessage,
 )
 from .errors import (
     ConversationNotFoundError,
@@ -14,4 +15,5 @@ __all__ = [
     "ConversationService",
     "InvalidMessageRoleError",
     "MessageNotFoundError",
+    "NewMessage",
 ]
