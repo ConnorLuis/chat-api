@@ -211,34 +211,6 @@ def test_default_provider_comes_from_settings(
     assert captured_provider_names == ["ollama"]
 
 
-def test_stream_true_returns_day4_boundary(
-    client,
-):
-    response = client.post(
-        "/v1/chat/completions",
-        json={
-            "model": "mock-model",
-            "messages": [
-                {
-                    "role": "user",
-                    "content": "hello",
-                }
-            ],
-            "stream": True,
-        },
-    )
-
-    assert response.status_code == 400
-
-    error = response.json()["error"]
-
-    assert error["type"] == "invalid_request_error"
-    assert error["param"] == "stream"
-    assert (
-        error["code"]
-        == "streaming_not_supported_yet"
-    )
-
 
 def test_n_greater_than_one_is_rejected(
     client,

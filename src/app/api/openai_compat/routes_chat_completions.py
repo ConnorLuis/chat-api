@@ -18,6 +18,9 @@ from src.app.llm.providers import (
 
 from .errors import openai_error_response
 from .route import OpenAICompatRoute
+from .streaming import (
+    build_openai_streaming_response,
+)
 from .schemas import (
     OpenAIAssistantMessage,
     OpenAIChatCompletionChoice,
@@ -131,8 +134,9 @@ def _completion_json_response(
     response_model_exclude_none=True,
     summary="Create chat completion",
     description=(
-        "OpenAI-compatible non-streaming Chat Completions "
-        "endpoint. Streaming is introduced in Chat-Day4."
+        "OpenAI-compatible Chat Completions endpoint. "
+        "Supports non-streaming chat.completion responses "
+        "and streaming chat.completion.chunk SSE responses."
     ),
     responses={
         400: {
@@ -152,20 +156,6 @@ def _completion_json_response(
 def create_chat_completion(
     body: OpenAIChatCompletionRequest,
 ):
-    if body.stream:
-        return openai_error_response(
-            status_code=400,
-            message=(
-                "Streaming is not available on "
-                "/v1/chat/completions yet. "
-                "Use stream=false; OpenAI-compatible "
-                "streaming is scheduled for Chat-Day4."
-            ),
-            error_type="invalid_request_error",
-            param="stream",
-            code="streaming_not_supported_yet",
-        )
-
     if body.n != 1:
         return openai_error_response(
             status_code=400,
@@ -207,6 +197,17 @@ def create_chat_completion(
         ),
         max_tokens=body.resolved_max_tokens(),
     )
+
+    if body.stream:
+        return build_openai_streaming_response(
+            provider=provider,
+            request=provider_request,
+            requested_model=body.model,
+            include_usage=bool(
+                body.stream_options
+                and body.stream_options.include_usage
+            ),
+        )
 
     try:
         provider_response = provider.chat(

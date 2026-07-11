@@ -28,10 +28,18 @@ class OpenAIChatMessage(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class OpenAIStreamOptions(BaseModel):
+    """OpenAI-compatible streaming options."""
+
+    include_usage: bool = False
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class OpenAIChatCompletionRequest(BaseModel):
     """OpenAI-compatible Chat Completions 请求。
 
-    当前仅支持纯文本、单 choice、非流式调用。
+    当前支持纯文本、单 choice，以及非流式/流式调用。
     provider 是 chat-api 网关扩展字段。
     """
 
@@ -77,6 +85,7 @@ class OpenAIChatCompletionRequest(BaseModel):
         ge=1,
     )
     stream: bool = False
+    stream_options: OpenAIStreamOptions | None = None
     user: str | None = None
 
     model_config = ConfigDict(extra="forbid")
@@ -134,6 +143,31 @@ class OpenAIChatCompletionResponse(BaseModel):
     created: int
     model: str
     choices: list[OpenAIChatCompletionChoice]
+    usage: OpenAICompletionUsage | None = None
+
+
+class OpenAIChatCompletionDelta(BaseModel):
+    """Streaming choice delta."""
+
+    role: Literal["assistant"] | None = None
+    content: str | None = None
+
+
+class OpenAIChatCompletionChunkChoice(BaseModel):
+    index: int
+    delta: OpenAIChatCompletionDelta
+    finish_reason: str | None = None
+    logprobs: None = None
+
+
+class OpenAIChatCompletionChunk(BaseModel):
+    id: str
+    object: Literal[
+        "chat.completion.chunk"
+    ] = "chat.completion.chunk"
+    created: int
+    model: str
+    choices: list[OpenAIChatCompletionChunkChoice]
     usage: OpenAICompletionUsage | None = None
 
 
