@@ -45,3 +45,74 @@ def isolated_kb_env(tmp_path, monkeypatch):
         }
 
     return _isolated_kb_env
+
+
+# 某些历史测试直接使用模块级 TestClient(app)，
+# 没有自行覆盖 get_session_factory。
+# 为这些测试准备完整且隔离的默认数据库，
+# 避免依赖仓库中的本地 SQLite 文件或预先执行 init_db。
+import src.app.db.session as db_session_module
+from src.app.db import models as _db_models  # noqa: F401
+from src.app.db.base import Base
+from src.app.db.session import (
+    build_engine,
+    build_session_factory,
+    init_db,
+)
+
+
+@pytest.fixture(
+    scope="session",
+    autouse=True,
+)
+def isolated_default_database(
+    tmp_path_factory,
+):
+    database_dir = (
+        tmp_path_factory.mktemp(
+            "default_database"
+        )
+    )
+    database_path = (
+        database_dir
+        / "chat_api_test.db"
+    )
+
+    engine = build_engine(
+        f"sqlite:///{database_path}"
+    )
+    session_factory = (
+        build_session_factory(engine)
+    )
+
+    original_engine = (
+        db_session_module
+        ._default_engine
+    )
+    original_session_factory = (
+        db_session_module
+        ._default_session_factory
+    )
+
+    db_session_module._default_engine = (
+        engine
+    )
+    db_session_module._default_session_factory = (
+        session_factory
+    )
+
+    init_db(engine)
+
+    try:
+        yield session_factory
+
+    finally:
+        db_session_module._default_session_factory = (
+            original_session_factory
+        )
+        db_session_module._default_engine = (
+            original_engine
+        )
+
+        Base.metadata.drop_all(engine)
+        engine.dispose()
