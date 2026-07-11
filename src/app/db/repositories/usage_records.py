@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from sqlalchemy import select
+from datetime import datetime
+
+from sqlalchemy import (
+    func,
+    select,
+)
 from sqlalchemy.orm import Session
 
 from src.app.db.models import UsageRecord
@@ -20,6 +25,7 @@ class UsageRecordRepository:
         *,
         trace_id: str,
         conversation_id: str | None,
+        caller_key_id: str | None = None,
         request_kind: str,
         provider: str,
         model: str,
@@ -34,6 +40,7 @@ class UsageRecordRepository:
         record = UsageRecord(
             trace_id=trace_id,
             conversation_id=conversation_id,
+            caller_key_id=caller_key_id,
             request_kind=request_kind,
             provider=provider,
             model=model,
@@ -80,4 +87,46 @@ class UsageRecordRepository:
             self.session.scalars(
                 statement
             ).all()
+        )
+
+
+
+    def sum_total_tokens_for_caller(
+        self,
+        *,
+        caller_key_id: str,
+        start_time: datetime,
+        end_time: datetime,
+    ) -> int:
+        """Sum known consumed tokens for one UTC range.
+
+        SQL SUM ignores NULL total_tokens, so usage_unavailable
+        records remain visible accounting facts but do not
+        fabricate token consumption.
+        """
+
+        statement = (
+            select(
+                func.coalesce(
+                    func.sum(
+                        UsageRecord.total_tokens
+                    ),
+                    0,
+                )
+            )
+            .where(
+                UsageRecord.caller_key_id
+                == caller_key_id,
+                UsageRecord.created_at
+                >= start_time,
+                UsageRecord.created_at
+                < end_time,
+            )
+        )
+
+        return int(
+            self.session.scalar(
+                statement
+            )
+            or 0
         )

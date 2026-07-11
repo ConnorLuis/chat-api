@@ -90,3 +90,18 @@ class RequestRateLimitResult:
             return self.ip
 
         return None
+
+
+@dataclass(
+    frozen=True,
+    slots=True,
+)
+class DailyTokenQuotaDecision:
+    caller_key_id: str
+    allowed: bool
+    limit: int
+    used_tokens: int
+    remaining_tokens: int
+    window_start: datetime
+    reset_at: datetime
+    retry_after_seconds: int

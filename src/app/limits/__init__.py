@@ -8,9 +8,14 @@ from .clock import (
     SystemClock,
 )
 from .models import (
+    DailyTokenQuotaDecision,
     RateLimitDecision,
     RateLimitPolicy,
     RequestRateLimitResult,
+)
+from .quota import (
+    DailyTokenQuotaService,
+    utc_day_bounds,
 )
 from .service import (
     IP_RATE_LIMIT_SCOPE,
@@ -23,6 +28,8 @@ from .store import (
 
 __all__ = [
     "Clock",
+    "DailyTokenQuotaDecision",
+    "DailyTokenQuotaService",
     "IP_RATE_LIMIT_SCOPE",
     "InMemorySlidingWindowStore",
     "RateLimitDecision",
@@ -34,4 +41,5 @@ __all__ = [
     "USER_RATE_LIMIT_SCOPE",
     "get_client_ip",
     "normalize_client_host",
+    "utc_day_bounds",
 ]

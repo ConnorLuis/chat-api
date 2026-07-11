@@ -74,3 +74,38 @@ def test_same_trace_can_have_multiple_records(
         "ollama",
         "openai",
     }
+
+
+def test_create_usage_record_with_caller_key_id(
+    db_session: Session,
+):
+    repository = UsageRecordRepository(
+        db_session
+    )
+
+    created = repository.create(
+        trace_id="trace-caller-usage",
+        conversation_id=None,
+        caller_key_id="key-day10-caller",
+        request_kind="chat_sync",
+        provider="mock",
+        model="mock-model",
+        status="succeeded",
+        usage_source="local_estimate",
+        prompt_tokens=5,
+        completion_tokens=2,
+        total_tokens=7,
+        latency_ms=3,
+    )
+
+    db_session.commit()
+
+    loaded = repository.get(
+        created.request_id
+    )
+
+    assert loaded is not None
+    assert (
+        loaded.caller_key_id
+        == "key-day10-caller"
+    )

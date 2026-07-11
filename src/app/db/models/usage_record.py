@@ -107,6 +107,11 @@ class UsageRecord(Base):
             "created_at",
         ),
         Index(
+            "ix_usage_records_caller_created",
+            "caller_key_id",
+            "created_at",
+        ),
+        Index(
             "ix_usage_records_provider_model_created",
             "provider",
             "model",
@@ -127,6 +132,16 @@ class UsageRecord(Base):
 
     # 不设置 FK：会话删除后 accounting 记录仍然保留。
     conversation_id: Mapped[str | None] = mapped_column(
+        String(36),
+        nullable=True,
+    )
+
+    # 不设置 FK：
+    # API Key 未来即使被物理删除，
+    # 历史 accounting 事实仍应保留。
+    caller_key_id: Mapped[
+        str | None
+    ] = mapped_column(
         String(36),
         nullable=True,
     )

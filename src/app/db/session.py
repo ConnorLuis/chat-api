@@ -4,7 +4,12 @@ from collections.abc import Generator
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import create_engine, event
+from sqlalchemy import (
+    create_engine,
+    event,
+    inspect,
+    text,
+)
 from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -134,6 +139,56 @@ def get_session_factory() -> SessionFactory:
     return _default_session_factory
 
 
+def _ensure_usage_record_caller_column(
+    engine: Engine,
+) -> None:
+    """Day10 additive migration for existing databases.
+
+    正式生产迁移后续应由 Alembic 管理；
+    当前 bootstrap 同时支持 SQLite 和 PostgreSQL。
+    """
+
+    inspector = inspect(engine)
+
+    if not inspector.has_table(
+        "usage_records"
+    ):
+        return
+
+    column_names = {
+        column["name"]
+        for column in inspector.get_columns(
+            "usage_records"
+        )
+    }
+
+    if "caller_key_id" not in column_names:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "ALTER TABLE usage_records "
+                    "ADD COLUMN caller_key_id "
+                    "VARCHAR(36)"
+                )
+            )
+
+    # create_all 不会为已存在的表补建新索引。
+    from .models import UsageRecord
+
+    caller_index = next(
+        index
+        for index
+        in UsageRecord.__table__.indexes
+        if index.name
+        == "ix_usage_records_caller_created"
+    )
+
+    caller_index.create(
+        bind=engine,
+        checkfirst=True,
+    )
+
+
 def init_db(
     engine: Engine | None = None,
 ) -> None:
@@ -150,6 +205,10 @@ def init_db(
 
     Base.metadata.create_all(
         bind=target_engine
+    )
+
+    _ensure_usage_record_caller_column(
+        target_engine
     )
 
 

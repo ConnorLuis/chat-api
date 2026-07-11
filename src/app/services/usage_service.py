@@ -57,6 +57,7 @@ class NewUsageRecord:
     total_tokens: int | None
     latency_ms: int
     error_type: str | None = None
+    caller_key_id: str | None = None
 
 
 class UsageService:
@@ -137,6 +138,11 @@ class UsageService:
         conversation_id = cls._optional_text(
             item.conversation_id,
             field_name="conversation_id",
+            max_length=36,
+        )
+        caller_key_id = cls._optional_text(
+            item.caller_key_id,
+            field_name="caller_key_id",
             max_length=36,
         )
         request_kind = cls._required_text(
@@ -258,6 +264,7 @@ class UsageService:
             trace_id=trace_id,
             conversation_id=conversation_id,
             request_kind=request_kind,
+            caller_key_id=caller_key_id,
             provider=provider,
             model=model,
             status=status,
@@ -284,6 +291,9 @@ class UsageService:
                 trace_id=normalized.trace_id,
                 conversation_id=(
                     normalized.conversation_id
+                ),
+                caller_key_id=(
+                    normalized.caller_key_id
                 ),
                 request_kind=(
                     normalized.request_kind
