@@ -1,4 +1,4 @@
-开始新对话前：**“chat-api 当前位于 `v2-langchain-rag-plus` 分支，定位为 Production-ready LLM Chat Gateway。Chat-Day2–Day6 已完成统一 Provider、OpenAI-compatible 同步/流式、SQLAlchemy 持久化、多会话历史和上下文窗口；Chat-Day7 已完成独立 `UsageRecord`、`provider_native/local_estimate/unavailable`、同步/流式统一 token accounting，以及 `succeeded/provider_failed/client_disconnected/persistence_failed` 终态语义；Chat-Day8 已完成版本化价格目录、Decimal 成本估算、独立 `UsageCost` 历史快照、Message + UsageRecord + UsageCost 原子持久化，以及 `/usage/pricing|records|summary|daily|providers|models` 查询聚合 API。当前 `pytest -q` 为 174 passed，Day7 commit `bab036c`，Day8 test isolation fix `973b5a6`，Day8 feature commit `22bd6c9`，GitHub Actions CI 为 success。下一步开始 Chat-Day9：API Key authentication；继续保持 OpenAI-compatible、旧 SSE、RAG、PromptHub、Replay 契约，不要重复 agent-api 的 Agentic RAG / GraphRAG / Multi-Agent / MCP。”**
+开始新对话前：**“chat-api 当前位于 `v2-langchain-rag-plus` 分支，定位为 Production-ready LLM Chat Gateway。Chat-Day2–Day6 已完成统一 Provider、OpenAI-compatible 同步/流式、SQLAlchemy 持久化、多会话历史和上下文窗口；Chat-Day7 已完成 UsageRecord 与统一 token accounting；Chat-Day8 已完成 pricing、UsageCost 与 reporting API；Chat-Day9 已完成 API Key 一次性明文创建、HMAC hash 存储、active/revoked、Bearer/X-API-Key、CallerIdentity、公开/受保护路由和真实安全验收。当前 `pytest -q` 为 204 passed，`pytest tests/auth -q` 为 20 passed，GitHub Actions CI 为 success。下一步开始 Chat-Day10：Rate limit / token quota；继续保持 OpenAI-compatible、旧 SSE、RAG、PromptHub、Replay 契约，不要重复 agent-api 的 Agentic RAG / GraphRAG / Multi-Agent / MCP。”**
 
 # HANDOFF（chat-api v2-plus，Chat-Day8 completed）
 
@@ -9,12 +9,12 @@
 - 已完成 v2 分支：`v2-langchain-rag`
 - 当前开发分支：`v2-langchain-rag-plus`
 - v1 稳定分支：`master`
-- 当前测试：`pytest -q` → `174 passed`
-- 当前 CI：GitHub Actions success（commit `22bd6c9`）
+- 当前测试：`pytest -q` → `204 passed`
+- 当前 CI：GitHub Actions success（Chat-Day9）
 - Day7 commit：`bab036c feat(day7): add token usage accounting`
 - Day8 test fix：`973b5a6 fix(day8): initialize isolated default test database`
 - Day8 feature commit：`22bd6c9 feat(day8): add cost estimation and usage reporting`
-- 下一里程碑：Chat-Day9 API Key authentication
+- 下一里程碑：Chat-Day10 Rate limit / token quota
 - Ollama：安装在 Windows；模型 `qwen2.5:7b` 已 pull
 - WSL 访问 Windows Ollama：
 
@@ -334,6 +334,32 @@ feature commit: 22bd6c9
 GitHub Actions: success
 ```
 
+### Chat-Day9 状态（completed）
+
+```text
+one-time plaintext key creation: completed
+HMAC-SHA256 + server-side pepper: completed
+APIKey ORM/repository/service/CLI: completed
+active/revoked/revoked_at: completed
+Authorization: Bearer: completed
+X-API-Key: completed
+CallerIdentity + request.state.caller: completed
+GET /auth/whoami: completed
+native/OpenAI-compatible auth errors: completed
+public/protected route boundary: completed
+GET /ready: completed
+real HTTP acceptance: passed
+real revocation acceptance: passed
+database plaintext scan: passed
+repository secret scan: passed
+Day8 -> Day9 additive schema: passed
+pytest tests/auth -q: 20 passed
+pytest tests/db -q: 36 passed
+pytest -q: 204 passed
+GitHub Actions: success
+commit message: feat(day9): add API key authentication
+```
+
 ### 本地路线图文件策略
 
 详细路线图文件：
@@ -344,21 +370,253 @@ LLM_GATEWAY_ROADMAP.md
 
 该文件只用于本地规划和学习，不进入 git。README、HANDOFF、源码、测试和正式 Day 记录可按阶段提交；不要提交 `LLM_GATEWAY_ROADMAP.md`。
 
-### Chat-Day9 下一步
+### Chat-Day10 下一步
 
 ```text
-实现 API Key authentication。
+实现 Rate limit / token quota。
 
 要求：
-1. API key 只保存 hash，不保存可恢复明文。
-2. 明确 key id / prefix / name / status / created_at / revoked_at。
-3. 认证成功后形成稳定 caller identity。
-4. 明确公开路径与受保护路径。
-5. missing / malformed / invalid / revoked key 使用可机器解析错误契约。
-6. OpenAI-compatible 支持 Authorization: Bearer。
-7. 原生 API 明确 X-API-Key 与 Bearer 的兼容策略。
-8. 不破坏 health、readiness、docs、旧 SSE 与 OpenAI SDK contract。
-9. 建立隔离测试数据库和 CI 边界。
+1. 复用 CallerIdentity.key_id。
+2. request rate limit 与 token quota 分离。
+3. 明确窗口算法、并发安全和测试时钟。
+4. 定义同步、流式、失败、断开时的扣减语义。
+5. 原生 429 与 OpenAI-compatible rate_limit_error。
+6. 输出 Retry-After、remaining、reset 等信息。
+7. 明确单进程 store 与 Redis 分布式边界。
+8. pytest 与 GitHub Actions CI 全绿。
+```
+
+---
+
+## Chat-Day9：API Key authentication（completed）
+
+### 目标
+
+```text
+明文只在创建时返回一次
+数据库仅保存 hash/prefix/metadata
+active/revoked lifecycle
+stable CallerIdentity
+public/protected routes
+Bearer + X-API-Key
+native + OpenAI-compatible errors
+real security and migration acceptance
+```
+
+### 模块
+
+```text
+src/app/auth/{keys,errors,identity,headers,http,dependency,__main__}.py
+src/app/api/auth/{routes_auth,schemas}.py
+src/app/db/models/api_key.py
+src/app/db/repositories/api_keys.py
+src/app/services/api_key_service.py
+tests/auth/
+tests/db/test_api_key_repository.py
+tests/db/test_api_key_service.py
+```
+
+### 数据模型
+
+```text
+APIKey:
+  id
+  prefix
+  key_hash
+  name
+  status
+  created_at
+  revoked_at
+```
+
+完整 Key：
+
+```text
+chat_sk_<public-prefix>_<random-secret>
+```
+
+存储：
+
+```text
+plaintext returned once
+→ HMAC-SHA256 with API_KEY_HASH_PEPPER
+→ persist only prefix/hash/metadata
+```
+
+### 配置与兼容
+
+```text
+API_AUTH_ENABLED=false
+API_KEY_HASH_PEPPER=<server-side secret>
+```
+
+认证关闭时不访问 api_keys 表，`request.state.caller=None`，保持 Day1-Day8 客户端兼容。认证开启时，受保护 Router 必须提供有效 Key。
+
+### Header 策略
+
+```text
+Bearer only -> bearer
+X-API-Key only -> x-api-key
+both same -> bearer
+both different -> api_key_invalid
+malformed/empty -> api_key_invalid
+missing -> api_key_missing
+```
+
+### CallerIdentity
+
+```text
+key_id
+key_prefix
+key_name
+authentication_method
+authenticated_at
+```
+
+不包含 plaintext、hash 或 pepper，为 Day10 rate limit/quota 提供统一 caller 输入。
+
+### 路由边界
+
+公开：
+
+```text
+/health
+/ready
+/docs
+/redoc
+/openapi.json
+/demo
+```
+
+受保护：
+
+```text
+/chat
+/chat/stream
+/v1/chat/completions
+/conversations/**
+/usage/**
+/kb/**
+/prompts
+/prompt/compare
+/runs/**
+/auth/whoami
+```
+
+### 错误契约
+
+原生：
+
+```json
+{"detail":{"code":"api_key_missing","message":"API key is required"}}
+```
+
+OpenAI-compatible：
+
+```json
+{"error":{"message":"API key is required","type":"authentication_error","param":null,"code":"api_key_missing"}}
+```
+
+稳定 code：
+
+```text
+api_key_missing
+api_key_invalid
+api_key_revoked
+api_key_auth_not_configured
+```
+
+### Readiness
+
+`GET /ready` 使用数据库 `SELECT 1`；成功返回 200 ready，失败返回 503 not_ready。`/health` 继续保持纯 liveness。
+
+### 真实验收
+
+```text
+public paths without key -> 200
+native missing key -> api_key_missing
+native X-API-Key -> 200
+OpenAI missing key -> authentication_error
+OpenAI Bearer -> 200
+conflicting headers -> api_key_invalid
+revoked key -> api_key_revoked
+whoami -> no secret leakage
+```
+
+安全验证：
+
+```text
+schema has no plaintext/secret/encrypted_key column
+stored hash differs from plaintext
+HMAC recomputation matches
+SQLite DB/WAL/SHM/journal contain no full key
+repository contains no real key or pepper
+```
+
+迁移验证：
+
+```text
+Day8 tables + sentinel row
+→ Day9 init_db
+→ api_keys added
+→ old tables and row preserved
+```
+
+### 关键排障
+
+```text
+1. shell source day9.env 使历史测试全部 401
+   -> root autouse fixture 默认关闭认证，auth fixture 再显式开启。
+
+2. env -u PYTHONPATH 后 src/scripts 无法导入
+   -> tests/conftest.py 注入 repo root。
+
+3. auth.__init__ / services 循环导入
+   -> auth.__init__ 只导出纯领域对象，具体模块直接导入。
+
+4. 重写 root conftest 丢失 client/isolated_kb_env
+   -> 恢复共享 fixture 后再加入 auth isolation。
+
+5. test_api_key_http.py 与 test_chat_mock.py 被重定向清空
+   -> 检查 collect 数量和 0-byte test files，最终恢复 204 tests。
+
+6. shell 粘贴误创建 -q、pytest、API_KEY_HASH_PEPPER=... 文件
+   -> 删除并采用精确 git add 清单。
+```
+
+### 测试与 CI
+
+```text
+pytest tests/auth -q -> 20 passed
+pytest tests/db -q -> 36 passed
+pytest -q -> 204 passed
+env -u PYTHONPATH pytest -q -> 204 passed
+external API_AUTH_ENABLED isolation -> 16 passed
+GitHub Actions -> success
+```
+
+### 设计价值
+
+```text
+one-time plaintext: DB 泄漏不直接得到可用凭证
+HMAC + pepper: 服务端秘密与数据库分离
+prefix: 安全识别与运维可观测
+CallerIdentity: 认证与 quota/audit 解耦
+Router dependency: 不侵入业务 handler
+双错误协议: 原生与 OpenAI SDK 都保持稳定契约
+feature flag: 支持平滑迁移
+真实吊销/明文扫描: 超越单元测试的安全验收
+```
+
+### Day9 明确不做
+
+```text
+RBAC/scope
+rate limit/token quota
+key expiration/rotation
+Redis auth cache
+admin HTTP key management
+Alembic production migration
 ```
 
 ---
@@ -2510,175 +2768,53 @@ backup_kb_reset/
 
 ## 6. v2-plus 当前状态与下一步
 
-当前开发分支：
+当前分支：`v2-langchain-rag-plus`。
 
-```text
-v2-langchain-rag-plus
-```
-
-当前定位：
-
-```text
-Production-ready LLM Chat Gateway / 多模型统一接入与流式对话后端系统
-```
+当前定位：`Production-ready LLM Chat Gateway`。
 
 ### 已完成
 
 ```text
-Chat-Day1:
-  分支、定位、README/HANDOFF、本地路线图、anti-drift。
-
-Chat-Day2:
-  ChatProvider / ProviderFactory；
-  Mock/Ollama/OpenAI；
-  request-level provider/model override；
-  pytest -q 80 passed；CI green。
-
-Chat-Day3:
-  OpenAI-compatible chat.completion；
-  pytest -q 87 passed；CI green。
-
-Chat-Day4:
-  OpenAI-compatible chat.completion.chunk SSE；
-  pytest -q 92 passed；CI green。
-
-Chat-Day5:
-  SQLAlchemy 2.x；
-  Conversation/Message ORM；
-  repository/service；
-  pytest -q 105 passed；CI green。
-
-Chat-Day6:
-  Conversation API；
-  history/context window；
-  stateful/stateless；
-  message atomic persistence；
-  pytest -q 126 passed；
-  commit d60c5e3；CI green。
-
-Chat-Day7:
-  UsageRecord；
-  native/estimate/unavailable；
-  success/failure/disconnect/persistence-failure；
-  pytest -q 147 passed；
-  commit bab036c；CI green。
-
-Chat-Day8:
-  pricing catalog；
-  Decimal estimator；
-  UsageCost snapshot；
-  usage/cost atomic persistence；
-  usage query/aggregation APIs；
-  pytest -q 174 passed；
-  commits 973b5a6 / 22bd6c9；
-  CI green。
+Day2-Day6: Provider / OpenAI-compatible / persistence / history
+Day7: UsageRecord and token accounting
+Day8: UsageCost and reporting APIs
+Day9: API Key authentication and CallerIdentity
 ```
 
 ### 当前 API 边界
 
 ```text
-POST /chat:
-  原生同步；
-  stateless 或 conversation history；
-  返回 usage + cost metadata。
-
-POST /chat/stream:
-  原生 SSE；
-  meta -> token* -> usage(cost included) -> done；
-  failure uses error event。
-
-POST /v1/chat/completions:
-  OpenAI-compatible sync/stream；
-  保持独立无状态。
-
-POST /prompt/compare:
-  Prompt A/B Compare；
-  当前不接 Conversation/UsageCost 主链路。
-
-Conversation:
-  POST /conversations
-  GET /conversations
-  GET/PATCH/DELETE /conversations/{id}
-  GET /conversations/{id}/messages
-
-Usage:
-  GET /usage/pricing
-  GET /usage/records
-  GET /usage/summary
-  GET /usage/daily
-  GET /usage/providers
-  GET /usage/models
+Public: /health /ready /docs /redoc /openapi.json /demo
+Authentication: /auth/whoami
+Protected: /chat /chat/stream /v1/chat/completions /prompt/compare
+           /conversations/** /usage/** /kb/** /prompts /runs/**
 ```
 
 ### 当前数据边界
 
 ```text
-Conversation:
-  id / title / created_at / updated_at
-
-Message:
-  id / conversation_id / sequence_no /
-  role / content / provider / model /
-  token_count / created_at
-
-UsageRecord:
-  request_id / trace_id / conversation_id /
-  request_kind / provider / model /
-  status / usage_source /
-  prompt_tokens / completion_tokens / total_tokens /
-  latency_ms / error_type / created_at
-
-UsageCost:
-  request_id / pricing_key / matched_pricing_key /
-  pricing_version / currency / unit_tokens /
-  cost_status /
-  prompt_price_per_unit / completion_price_per_unit /
-  prompt_cost / completion_cost / estimated_cost /
-  created_at
+Conversation
+Message
+UsageRecord
+UsageCost
+APIKey(id/prefix/key_hash/name/status/created_at/revoked_at)
 ```
 
-不变量：
+关键不变量：
 
 ```text
+API Key plaintext 不进入数据库
+pepper 不进入数据库或 Git
+revoked key 不能认证
+CallerIdentity 不含 plaintext/hash
 Message 不保存请求级 usage/cost
-unknown_price 金额为 NULL，不是 0
-usage_unavailable 金额为 NULL
-新 UsageRecord 必须有一对一 UsageCost
-历史 Day7 记录允许 missing_snapshot
-价格目录变化不重算历史快照
-不同币种不直接相加
-```
-
-### Anti-drift
-
-不要扩展为另一个 Agent 平台。继续聚焦：
-
-```text
-API key / caller identity
-rate limit / token quota
-cache / fallback / retry / timeout
-health / readiness / metrics
-Docker / deployment
-load test / performance
+unknown_price/usage_unavailable 金额为 NULL
 ```
 
 ### Next Work
 
 ```text
-Chat-Day9: API Key authentication
+Chat-Day10: Rate limit / token quota
 ```
 
-Chat-Day9 验收重点：
-
-```text
-1. API key 明文只在创建时返回一次。
-2. 数据库存 hash、prefix、metadata，不存可恢复明文。
-3. active/revoked 状态与吊销时间。
-4. 认证中间件或 dependency 的职责边界。
-5. 公开路径：health/readiness/docs 等。
-6. 受保护路径：chat/conversation/usage 等。
-7. Authorization: Bearer 与 X-API-Key 策略。
-8. missing/invalid/revoked 使用稳定错误代码。
-9. caller identity 可供 Day10 quota/rate limit 使用。
-10. pytest 与 GitHub Actions CI 全绿。
-```
+优先复用 `CallerIdentity.key_id`，分离 request limit 与 token quota，明确 429、Retry-After、remaining/reset、流式扣减、并发安全和 Redis 分布式边界。
