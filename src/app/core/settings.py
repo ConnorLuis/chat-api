@@ -6,6 +6,37 @@ def getenv(key: str, default: str) -> str:
     v = os.getenv(key)
     return default if v is None or v == "" else v
 
+
+def getenv_bool(
+    key: str,
+    default: bool,
+) -> bool:
+    raw = getenv(
+        key,
+        "true" if default else "false",
+    ).strip().lower()
+
+    if raw in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return True
+
+    if raw in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }:
+        return False
+
+    raise ValueError(
+        f"{key} must be a boolean value"
+    )
+
+
 """封装所有配置项
 
 """
@@ -56,6 +87,25 @@ class Settings:
         return getenv(
             "DATABASE_URL",
             "sqlite:///./data/chat_api.db",
+        )
+
+    # API Key authentication
+    @property
+    def API_AUTH_ENABLED(self) -> bool:
+        """认证迁移开关；Day9 验收时显式启用."""
+
+        return getenv_bool(
+            "API_AUTH_ENABLED",
+            False,
+        )
+
+    @property
+    def API_KEY_HASH_PEPPER(self) -> str:
+        """服务端 HMAC secret；禁止提交到仓库."""
+
+        return getenv(
+            "API_KEY_HASH_PEPPER",
+            "",
         )
 
     # Conversation 历史上下文

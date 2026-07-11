@@ -1,3 +1,7 @@
+from .api_key_service import (
+    APIKeyService,
+    CreatedAPIKey,
+)
 from .conversation_service import (
     ALLOWED_MESSAGE_ROLES,
     ConversationService,
@@ -26,7 +30,9 @@ from .usage_service import (
 )
 
 __all__ = [
+    "APIKeyService",
     "ALLOWED_MESSAGE_ROLES",
+    "CreatedAPIKey",
     "ALLOWED_USAGE_SOURCES",
     "ALLOWED_USAGE_STATUSES",
     "ConversationNotFoundError",

@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from src.app.db.base import Base
 from src.app.db.models import (
+    APIKey,
     Conversation,
     Message,
     UsageCost,
@@ -23,6 +24,7 @@ from src.app.services import (
 
 
 # 保证模型在 create_all 前注册。
+assert APIKey.__tablename__ == "api_keys"
 assert Conversation.__tablename__ == "conversations"
 assert Message.__tablename__ == "messages"
 assert UsageCost.__tablename__ == "usage_costs"

@@ -10,6 +10,7 @@ def test_database_schema_is_created(
     )
 
     assert table_names == {
+        "api_keys",
         "conversations",
         "messages",
         "usage_costs",

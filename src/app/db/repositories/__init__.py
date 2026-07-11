@@ -1,3 +1,4 @@
+from .api_keys import APIKeyRepository
 from .conversations import ConversationRepository
 from .messages import MessageRepository
 from .usage_costs import UsageCostRepository
@@ -9,6 +10,7 @@ from .usage_reports import (
 from .usage_records import UsageRecordRepository
 
 __all__ = [
+    "APIKeyRepository",
     "ConversationRepository",
     "MessageRepository",
     "UsageCostRepository",
