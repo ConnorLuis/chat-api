@@ -29,6 +29,13 @@ from src.app.auth.dependency import (
 from src.app.auth.http import (
     install_api_key_exception_handlers,
 )
+from src.app.limits.dependency import (
+    enforce_request_limits,
+)
+from src.app.limits.http import (
+    install_rate_limit_headers_middleware,
+    install_request_rate_limit_handler,
+)
 from src.app.core.logging import install_logging_middleware, setup_logging
 from src.app.db.session import (
     get_session_factory,
@@ -43,6 +50,8 @@ app = FastAPI()
 """
 install_logging_middleware(app)
 install_api_key_exception_handlers(app)
+install_request_rate_limit_handler(app)
+install_rate_limit_headers_middleware(app)
 
 """定义健康检查接口
     运维 / 监控工具（如 Kubernetes、Prometheus）会定期调用这个接口，判断服务是否正常运行；
@@ -88,11 +97,17 @@ app.include_router(demo_router)
 
 # Authentication verification route.
 # auth_router 自身已经声明 require_api_key dependency。
-app.include_router(auth_router)
+app.include_router(
+    auth_router,
+    dependencies=[
+        Depends(enforce_request_limits),
+    ],
+)
 
 # Protected native and OpenAI-compatible APIs.
 protected_dependencies = [
     Depends(require_api_key),
+    Depends(enforce_request_limits),
 ]
 
 app.include_router(

@@ -37,6 +37,34 @@ def getenv_bool(
     )
 
 
+def getenv_int(
+    key: str,
+    default: int,
+    *,
+    minimum: int = 0,
+) -> int:
+    raw = getenv(
+        key,
+        str(default),
+    ).strip()
+
+    try:
+        value = int(raw)
+
+    except ValueError as exc:
+        raise ValueError(
+            f"{key} must be an integer"
+        ) from exc
+
+    if value < minimum:
+        raise ValueError(
+            f"{key} must be greater than "
+            f"or equal to {minimum}"
+        )
+
+    return value
+
+
 """封装所有配置项
 
 """
@@ -106,6 +134,84 @@ class Settings:
         return getenv(
             "API_KEY_HASH_PEPPER",
             "",
+        )
+
+    # Request rate limit / token quota
+    @property
+    def REQUEST_RATE_LIMIT_ENABLED(
+        self,
+    ) -> bool:
+        return getenv_bool(
+            "REQUEST_RATE_LIMIT_ENABLED",
+            False,
+        )
+
+    @property
+    def USER_RATE_LIMIT_REQUESTS(
+        self,
+    ) -> int:
+        return getenv_int(
+            "USER_RATE_LIMIT_REQUESTS",
+            60,
+            minimum=1,
+        )
+
+    @property
+    def USER_RATE_LIMIT_WINDOW_SECONDS(
+        self,
+    ) -> int:
+        return getenv_int(
+            "USER_RATE_LIMIT_WINDOW_SECONDS",
+            60,
+            minimum=1,
+        )
+
+    @property
+    def IP_RATE_LIMIT_REQUESTS(
+        self,
+    ) -> int:
+        return getenv_int(
+            "IP_RATE_LIMIT_REQUESTS",
+            120,
+            minimum=1,
+        )
+
+    @property
+    def IP_RATE_LIMIT_WINDOW_SECONDS(
+        self,
+    ) -> int:
+        return getenv_int(
+            "IP_RATE_LIMIT_WINDOW_SECONDS",
+            60,
+            minimum=1,
+        )
+
+    @property
+    def RATE_LIMIT_TRUST_PROXY_HEADERS(
+        self,
+    ) -> bool:
+        return getenv_bool(
+            "RATE_LIMIT_TRUST_PROXY_HEADERS",
+            False,
+        )
+
+    @property
+    def TOKEN_QUOTA_ENABLED(
+        self,
+    ) -> bool:
+        return getenv_bool(
+            "TOKEN_QUOTA_ENABLED",
+            False,
+        )
+
+    @property
+    def DAILY_TOKEN_QUOTA_TOKENS(
+        self,
+    ) -> int:
+        return getenv_int(
+            "DAILY_TOKEN_QUOTA_TOKENS",
+            100_000,
+            minimum=1,
         )
 
     # Conversation 历史上下文
