@@ -1,6 +1,6 @@
-开始新对话前：**“chat-api 当前位于 `v2-langchain-rag-plus` 分支，定位为 Production-ready LLM Chat Gateway。Chat-Day2 已完成统一 Provider 层；Chat-Day3 已完成非流式 OpenAI-compatible `/v1/chat/completions`、独立 schema/error adapter、provider override 和官方 Python OpenAI SDK 兼容验证；`pytest -q` 为 87 passed，GitHub Actions CI 已绿，working tree clean。下一步开始 Chat-Day4：实现标准 `chat.completion.chunk` SSE streaming，同时保持旧 `/chat/stream` 契约不变，不要重复 agent-api 的 Agentic RAG / GraphRAG / Multi-Agent / MCP。”**
+开始新对话前：**“chat-api 当前位于 `v2-langchain-rag-plus` 分支，定位为 Production-ready LLM Chat Gateway。Chat-Day2 已完成统一 Provider 层；Chat-Day3 已完成非流式 OpenAI-compatible `/v1/chat/completions`；Chat-Day4 已完成 `stream=true` 的标准 `chat.completion.chunk` SSE、`choices[].delta`、可选 usage chunk、`data: [DONE]`、流内 error 和官方 OpenAI SDK 流式验证；`pytest -q` 为 92 passed，GitHub Actions CI 已绿。下一步开始 Chat-Day5：设计 Conversation / Message 数据库表与持久化基础，同时保持现有 API 和 SSE 契约不变，不要重复 agent-api 的 Agentic RAG / GraphRAG / Multi-Agent / MCP。”**
 
-# HANDOFF（chat-api v2-plus，Chat-Day3 completed）
+# HANDOFF（chat-api v2-plus，Chat-Day4 completed）
 
 ## 0. 环境与项目
 
@@ -9,9 +9,9 @@
 - 已完成 v2 分支：`v2-langchain-rag`
 - 当前开发分支：`v2-langchain-rag-plus`
 - v1 稳定分支：`master`
-- 当前测试：`pytest -q` → `87 passed`
+- 当前测试：`pytest -q` → `92 passed`
 - 当前 CI：GitHub Actions green
-- 下一里程碑：Chat-Day4 OpenAI-compatible SSE streaming
+- 下一里程碑：Chat-Day5 Conversation / Message database tables
 - Ollama：安装在 Windows；模型 `qwen2.5:7b` 已 pull
 - WSL 访问 Windows Ollama：
 
@@ -200,6 +200,28 @@ GitHub Actions CI: green
 working tree: clean
 ```
 
+### Chat-Day4 状态（completed）
+
+```text
+stream=true StreamingResponse: completed
+Content-Type text/event-stream: completed
+chat.completion.chunk schema: completed
+assistant role chunk: completed
+content delta chunks: completed
+finish_reason mapping: completed
+stream_options.include_usage: completed
+choices=[] usage chunk: completed
+data: [DONE]: completed
+stream error event: completed
+failure stream without [DONE]: completed
+official Python OpenAI SDK stream=True: completed
+legacy /chat/stream compatibility: completed
+pytest tests/openai_compat -q: 12 passed
+pytest tests/stream -q: 9 passed
+pytest -q: 92 passed
+GitHub Actions CI: green
+```
+
 ### 本地路线图文件策略
 
 详细路线图文件：
@@ -210,19 +232,19 @@ LLM_GATEWAY_ROADMAP.md
 
 该文件只用于本地规划和学习，不进入 git。README、HANDOFF、源码、测试和正式 Day 记录可按阶段提交；不要提交 `LLM_GATEWAY_ROADMAP.md`。
 
-### Chat-Day4 下一步
+### Chat-Day5 下一步
 
 ```text
-实现 /v1/chat/completions 的 OpenAI-compatible SSE streaming。
+设计并实现 Conversation / Message 数据库表与持久化基础。
 
 要求：
-1. 只在 stream=true 分支启用 StreamingResponse。
-2. 输出 data: {chat.completion.chunk JSON}。
-3. 使用 choices[].delta 传递 role/content 增量。
-4. 结束时输出 finish_reason，并以 data: [DONE] 收尾。
-5. 可选 usage chunk 必须与现有 ProviderUsage 边界对齐。
-6. 保持旧 /chat/stream 的 meta/token/usage/done/error 契约不变。
-7. 不提前混入会话数据库、鉴权、限流、fallback 或 Agent 能力。
+1. 先明确 SQLite 开发环境与后续 PostgreSQL 迁移边界。
+2. 建立 Conversation / Message 数据模型。
+3. 建立数据库初始化、session 管理和 repository/service 基础。
+4. 增加最小 CRUD 与持久化单元测试。
+5. 使用隔离测试数据库，不污染本地运行数据。
+6. 暂不提前实现 Day6 的完整历史拼接与上下文窗口截断。
+7. 保持 /chat、/chat/stream、/v1/chat/completions、RAG、PromptHub、Replay 兼容。
 ```
 
 ---
@@ -583,6 +605,122 @@ Replay 未修改
 
 ```text
 Chat-Day4: OpenAI-compatible SSE streaming
+```
+
+---
+
+## Chat-Day4：OpenAI-compatible SSE streaming（completed）
+
+### 目标
+
+```text
+1. 复用 OpenAIChatCompletionRequest 与 ChatProvider.stream()。
+2. stream=true 返回 text/event-stream。
+3. 每个数据块使用 data: {JSON}。
+4. object 固定为 chat.completion.chunk。
+5. 首个 chunk 建立 assistant role。
+6. 后续 chunk 输出 content delta。
+7. 正确映射 finish_reason。
+8. 可选 usage chunk 与 ProviderUsage 对齐。
+9. 最终输出 data: [DONE]。
+10. Provider 失败时输出流内 OpenAI-compatible error。
+11. 保持旧 /chat/stream 契约不变。
+```
+
+### 新增与修改
+
+```text
+M  src/app/api/openai_compat/routes_chat_completions.py
+M  src/app/api/openai_compat/schemas.py
+A  src/app/api/openai_compat/streaming.py
+M  tests/openai_compat/test_chat_completions.py
+A  tests/openai_compat/test_chat_completions_stream.py
+```
+
+未修改：
+
+```text
+src/app/api/routes_chat.py
+src/app/api/prompt/routes_prompt.py
+src/app/llm/providers/
+src/app/rag/
+```
+
+### 流式调用链
+
+```text
+POST /v1/chat/completions
+  → OpenAIChatCompletionRequest
+  → get_chat_provider()
+  → build_provider_request()
+  → provider.stream()
+  → ProviderChatChunk*
+  → OpenAI streaming adapter
+  → data: {chat.completion.chunk JSON}*
+  → optional usage chunk
+  → data: [DONE]
+```
+
+### 正常顺序
+
+```text
+role chunk
+→ content delta chunk*
+→ finish chunk
+→ usage chunk（可选）
+→ data: [DONE]
+```
+
+### Usage 规则
+
+只有请求 `stream_options.include_usage=true`，且 ProviderUsage 完整时，才输出 `choices=[]` usage chunk。不完整 usage 不伪造为零。
+
+### 错误语义
+
+StreamingResponse 建立后无法切换为 HTTP 502，因此 Provider 失败时输出：
+
+```text
+data: {"error":{"message":"...","type":"api_error","param":null,"code":"provider_error"}}
+
+```
+
+失败流不输出 finish chunk、usage chunk 或 `[DONE]`。
+
+### 兼容隔离
+
+```text
+/v1/chat/completions:
+  data-only SSE
+  chat.completion.chunk
+  [DONE]
+
+/chat/stream:
+  event: meta
+  event: token
+  event: usage
+  event: done
+  event: error
+```
+
+Day4 通过独立 `streaming.py` adapter 实现，没有修改旧路由。
+
+### 测试与实测
+
+```text
+tests/openai_compat/test_chat_completions.py -> 6 passed
+tests/openai_compat/test_chat_completions_stream.py -> 6 passed
+tests/openai_compat -> 12 passed
+tests/stream -> 9 passed
+pytest -q -> 92 passed in 6.82s
+GitHub Actions CI -> green
+```
+
+curl 与官方 Python OpenAI SDK 的 `stream=True` 均已实测通过。
+
+### 下一里程碑
+
+```text
+Chat-Day5: Conversation / Message database tables
 ```
 
 ---
@@ -1134,49 +1272,56 @@ Chat-Day1:
   分支、定位、README/HANDOFF、本地路线图、anti-drift 规则。
 
 Chat-Day2:
-  ChatProvider 协议；
-  ProviderMessage / Request / Response / Chunk / Usage；
+  ChatProvider / ProviderFactory；
   MockProvider / OllamaProvider / OpenAIProvider；
-  ProviderFactory；
   request-level provider/model override；
-  /chat、/chat/stream、/prompt/compare 主链路迁移；
+  /chat、/chat/stream、/prompt/compare 迁移；
   pytest -q 80 passed；
-  GitHub Actions CI green。
+  CI green。
 
 Chat-Day3:
   POST /v1/chat/completions；
-  独立 OpenAI-compatible schema / error adapter；
-  ChatProvider / ProviderFactory 复用；
+  chat.completion 非流式响应；
+  OpenAI-compatible schemas / errors；
   provider gateway extension；
-  OPENAI_COMPAT_DEFAULT_PROVIDER；
-  非流式 chat.completion 响应；
-  可选 usage 映射；
-  stream=true Day4 边界；
-  n=1 边界；
-  官方 Python OpenAI SDK 兼容实测；
-  tests/openai_compat 7 passed；
+  OpenAI SDK 非流式验证；
   pytest -q 87 passed；
-  GitHub Actions CI green；
-  commit 732f084；
-  working tree clean。
+  CI green。
+
+Chat-Day4:
+  stream=true StreamingResponse；
+  chat.completion.chunk；
+  choices[].delta.role / content；
+  finish_reason；
+  stream_options.include_usage；
+  choices=[] usage chunk；
+  data: [DONE]；
+  流内 OpenAI-compatible error；
+  失败流无 [DONE]；
+  OpenAI SDK stream=True 验证；
+  旧 /chat/stream 契约兼容；
+  tests/openai_compat 12 passed；
+  tests/stream 9 passed；
+  pytest -q 92 passed；
+  CI green。
 ```
 
 ### 当前 API 边界
 
 ```text
 POST /chat:
-  旧项目同步 API，保留 metadata / RAG / PromptHub 能力。
+  项目原生同步 API，保留 metadata / RAG / PromptHub 能力。
 
 POST /chat/stream:
-  旧项目自定义 SSE，保持 meta/token/usage/done/error。
+  项目原生 SSE，保持 meta/token/usage/done/error。
 
 POST /prompt/compare:
   Prompt A/B Compare，继续通过统一 Provider 层执行。
 
 POST /v1/chat/completions:
-  OpenAI-compatible 非流式接口；
-  stream=false 已完成；
-  stream=true 当前返回 HTTP 400 边界错误，等待 Chat-Day4。
+  OpenAI-compatible 同步/流式统一入口；
+  stream=false → chat.completion；
+  stream=true → chat.completion.chunk + [DONE]。
 ```
 
 ### Anti-drift
@@ -1195,8 +1340,6 @@ agent-api 风格 Agent 编排系统
 继续聚焦：
 
 ```text
-OpenAI-compatible API
-标准流式协议
 会话与消息持久化
 上下文管理
 usage / cost
@@ -1208,20 +1351,20 @@ cache / fallback / retry / timeout
 ### Next Work
 
 ```text
-Chat-Day4: OpenAI-compatible SSE streaming
+Chat-Day5: Conversation / Message database tables
 ```
 
-Chat-Day4 验收重点：
+Chat-Day5 验收重点：
 
 ```text
-1. 复用现有 OpenAIChatCompletionRequest 与 ChatProvider.stream()。
-2. stream=true 返回 Content-Type: text/event-stream。
-3. 每个数据块使用 data: {JSON}，object=chat.completion.chunk。
-4. 首个 chunk 建立 assistant role，后续 chunk 输出 content delta。
-5. 正确映射 finish_reason。
-6. 可选 usage chunk 与 ProviderUsage 对齐。
-7. 最终输出 data: [DONE]。
-8. Provider 失败时，在流已建立后输出可解析的 OpenAI-compatible error 事件。
-9. 保持旧 /chat/stream 的 meta/token/usage/done/error 契约不变。
-10. pytest -q 与 CI 保持全绿。
+1. 确定 SQLite 开发存储方案及 PostgreSQL 迁移边界。
+2. 建立 Conversation 表。
+3. 建立 Message 表及 conversation 外键关系。
+4. 明确 role/content/provider/model/token/created_at 等字段边界。
+5. 建立数据库初始化与 session 管理。
+6. 建立 repository/service 基础，不把 SQL 写入 API route。
+7. 使用隔离测试数据库。
+8. 增加 create/get/list/delete 等最小持久化测试。
+9. 暂不提前实现 Day6 的自动历史拼接和上下文窗口截断。
+10. 保持现有 92 个测试与 CI 全绿。
 ```

@@ -65,13 +65,18 @@ Chat-Day2:
 
 Chat-Day3:
   完成非流式 OpenAI-compatible /v1/chat/completions、
-  独立 request/response/error schema、provider override、OpenAI SDK 客户端兼容验证，
-  并为 stream=true 建立明确的 Chat-Day4 边界。
+  独立 request/response/error schema、provider override 和 OpenAI SDK 客户端兼容验证。
+
+Chat-Day4:
+  完成 /v1/chat/completions 的 OpenAI-compatible SSE streaming，
+  支持 chat.completion.chunk、choices[].delta、finish_reason、
+  可选 usage chunk、data: [DONE] 和流内 error，并保持旧 /chat/stream 契约不变。
 
 Current validation:
-  pytest -q -> 87 passed
+  pytest tests/openai_compat -q -> 12 passed
+  pytest tests/stream -q -> 9 passed
+  pytest -q -> 92 passed
   GitHub Actions CI -> green
-  working tree -> clean
 
 Local-only roadmap:
   LLM_GATEWAY_ROADMAP.md，不进入 git。
@@ -80,10 +85,9 @@ Local-only roadmap:
 ### 下一步
 
 ```text
-Chat-Day4:
-  为 /v1/chat/completions 实现标准 OpenAI-compatible SSE streaming，
-  输出 chat.completion.chunk / choices[].delta / data: [DONE]，
-  同时保持旧 /chat/stream 的 meta/token/usage/done/error 契约不变。
+Chat-Day5:
+  设计并实现 Conversation / Message 数据库表与持久化基础，
+  为后续多会话历史、上下文截断和 usage 统计建立数据模型。
 ```
 <!-- LLM_GATEWAY_PLUS_END -->
 
@@ -94,7 +98,7 @@ Chat-Day4:
 * `POST /chat`：同步聊天（`provider=mock|ollama|openai`），支持请求级 `model` override，返回 `metadata`
 * `POST /chat/stream`：SSE 流式聊天（`provider=mock|ollama|openai`），事件：`meta/token/usage/done/error`
 * `POST /prompt/compare`：通过统一 Provider 层执行 Prompt A/B Compare
-* `POST /v1/chat/completions`：OpenAI-compatible 非流式 Chat Completions，支持标准响应结构与网关 `provider` override
+* `POST /v1/chat/completions`：OpenAI-compatible Chat Completions，支持非流式 `chat.completion` 与流式 `chat.completion.chunk`，并支持网关 `provider` override
 * 全局中间件：`x-trace-id` + latency 日志
 * 统一 ChatProvider：MockProvider / OllamaProvider / OpenAIProvider
 * ProviderFactory：屏蔽不同模型服务调用差异，OpenAI SDK 按需懒加载
@@ -151,7 +155,7 @@ langchain-chroma
 
 主 `requirements.txt` 不包含 LangChain，避免 CI 和基础测试被可选依赖污染。
 
-### Optional: OpenAI Provider / SDK dependencies (Chat-Day2 / Chat-Day3)
+### Optional: OpenAI Provider / SDK dependencies (Chat-Day2–Chat-Day4)
 
 OpenAI / OpenAI-compatible Provider 使用可选依赖：
 
@@ -165,7 +169,7 @@ python -m pip install -r requirements-openai.txt
 requirements-openai.txt
 ```
 
-`openai` SDK 在 `OpenAIProvider` 真正执行请求时才懒加载，因此基础 CI、MockProvider 和 OllamaProvider 不依赖 OpenAI SDK。Chat-Day3 还使用该依赖完成了官方 Python 客户端对本地 `/v1/chat/completions` 的兼容实测；本地验证时安装版本为 `openai 2.45.0`。
+`openai` SDK 在 `OpenAIProvider` 真正执行请求时才懒加载，因此基础 CI、MockProvider 和 OllamaProvider 不依赖 OpenAI SDK。Chat-Day3 完成非流式 SDK 兼容验证，Chat-Day4 完成 `stream=True` 流式客户端验证；本地验证版本为 `openai 2.45.0`。
 
 ### 2) Run server
 
@@ -266,40 +270,41 @@ POST /prompt/compare
 
 ---
 
-## OpenAI-compatible Chat Completions (Chat-Day3)
+## OpenAI-compatible Chat Completions (Chat-Day3 / Chat-Day4)
 
-Chat-Day3 新增：
+统一入口：
 
 ```text
 POST /v1/chat/completions
 ```
 
-该接口是独立兼容层，直接复用 Chat-Day2 的 `ChatProvider` 与 `ProviderFactory`，不会调用旧 `/chat` 路由，也不会把 RAG、PromptHub、Replay 或旧 metadata 契约耦合进 OpenAI-compatible API。
+该接口是独立协议兼容层，直接复用 Chat-Day2 的 `ChatProvider` 与 `ProviderFactory`，不会调用旧 `/chat` 或 `/chat/stream` 路由，也不会把 RAG、PromptHub、Replay 或旧 metadata 契约耦合进 OpenAI-compatible API。
 
 ### 当前支持范围
 
 ```text
-非流式 stream=false
+stream=false → chat.completion
+stream=true  → text/event-stream + chat.completion.chunk
 单 choice：n=1
 纯文本 messages
 roles：developer / system / user / assistant
 model / temperature / top_p
 max_tokens / max_completion_tokens
+stream_options.include_usage
 可选网关扩展字段 provider=mock|ollama|openai
 ```
 
 当前暂不支持：
 
 ```text
-stream=true 的标准 chunk 输出（Chat-Day4）
 tools / tool_calls / function
 多模态 content parts
 n > 1
-logprobs 计算
+真实 logprobs 计算
 response_format
 ```
 
-### Request example
+### Non-stream request
 
 ```bash
 curl -s -X POST http://127.0.0.1:8000/v1/chat/completions \
@@ -315,7 +320,7 @@ curl -s -X POST http://127.0.0.1:8000/v1/chat/completions \
   }' | python -m json.tool
 ```
 
-### Response shape
+### Non-stream response
 
 ```json
 {
@@ -337,23 +342,158 @@ curl -s -X POST http://127.0.0.1:8000/v1/chat/completions \
 }
 ```
 
-当 Provider 返回完整 `prompt_tokens/completion_tokens/total_tokens` 时，接口会返回 `usage`；未知用量不会伪造为零，而是省略该字段。
+当 Provider 返回完整 `prompt_tokens/completion_tokens/total_tokens` 时，接口返回 `usage`；未知用量不会伪造为零，而是省略该字段。
+
+### Streaming request
+
+```bash
+curl -N -X POST http://127.0.0.1:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "provider": "mock",
+    "model": "mock-stream-model",
+    "messages": [
+      {
+        "role": "user",
+        "content": "hello day4"
+      }
+    ],
+    "stream": true
+  }'
+```
+
+响应头：
+
+```text
+Content-Type: text/event-stream
+Cache-Control: no-cache
+X-Accel-Buffering: no
+```
+
+流式协议：
+
+```text
+data: {assistant role chunk}
+
+data: {content delta chunk}
+data: {content delta chunk}
+...
+
+data: {finish_reason chunk}
+
+data: {usage chunk}      # 仅 include_usage=true 且 Provider usage 完整
+
+data: [DONE]
+```
+
+首个 chunk：
+
+```json
+{
+  "id": "chatcmpl-...",
+  "object": "chat.completion.chunk",
+  "created": 1783751885,
+  "model": "mock-stream-model",
+  "choices": [
+    {
+      "index": 0,
+      "delta": {
+        "role": "assistant"
+      },
+      "finish_reason": null,
+      "logprobs": null
+    }
+  ]
+}
+```
+
+内容 chunk：
+
+```json
+{
+  "id": "chatcmpl-...",
+  "object": "chat.completion.chunk",
+  "created": 1783751885,
+  "model": "mock-stream-model",
+  "choices": [
+    {
+      "index": 0,
+      "delta": {
+        "content": "hello"
+      },
+      "finish_reason": null,
+      "logprobs": null
+    }
+  ]
+}
+```
+
+结束 chunk：
+
+```json
+{
+  "id": "chatcmpl-...",
+  "object": "chat.completion.chunk",
+  "created": 1783751885,
+  "model": "mock-stream-model",
+  "choices": [
+    {
+      "index": 0,
+      "delta": {},
+      "finish_reason": "stop",
+      "logprobs": null
+    }
+  ]
+}
+```
+
+### Optional usage chunk
+
+请求：
+
+```json
+{
+  "stream": true,
+  "stream_options": {
+    "include_usage": true
+  }
+}
+```
+
+Provider 返回完整 usage 时，在 `[DONE]` 前输出：
+
+```json
+{
+  "id": "chatcmpl-...",
+  "object": "chat.completion.chunk",
+  "created": 1783751885,
+  "model": "actual-stream-model",
+  "choices": [],
+  "usage": {
+    "prompt_tokens": 8,
+    "completion_tokens": 3,
+    "total_tokens": 11
+  }
+}
+```
+
+不完整 usage 不会使用零值补齐，也不会输出 usage chunk。
 
 ### Provider routing
 
-标准客户端只传 `model` 时，使用：
+标准客户端只传 `model` 时使用：
 
 ```text
 OPENAI_COMPAT_DEFAULT_PROVIDER
 ```
 
-默认值是：
+默认：
 
 ```text
 mock
 ```
 
-网关调用方也可以传扩展字段：
+网关调用方可以传扩展字段：
 
 ```json
 {
@@ -368,9 +508,17 @@ mock
 }
 ```
 
-官方 Python SDK 可通过 `extra_body={"provider": "mock"}` 传递该扩展字段。
+官方 Python SDK 可通过：
+
+```python
+extra_body={"provider": "mock"}
+```
+
+传递该扩展字段。
 
 ### Official Python SDK compatibility
+
+非流式：
 
 ```python
 from openai import OpenAI
@@ -389,28 +537,74 @@ completion = client.chat.completions.create(
         }
     ],
 )
-
-print(completion.choices[0].message.content)
 ```
 
-`local-test-key` 目前只用于满足客户端初始化要求；网关 API Key 鉴权安排在 Chat-Day9。
+流式：
 
-### Error contract
+```python
+stream = client.chat.completions.create(
+    model="mock-stream-model",
+    messages=[
+        {
+            "role": "user",
+            "content": "hello from sdk stream",
+        }
+    ],
+    stream=True,
+    extra_body={
+        "provider": "mock",
+    },
+)
 
-OpenAI-compatible 路由使用独立错误形状：
+parts = []
 
-```json
-{
-  "error": {
-    "message": "...",
-    "type": "invalid_request_error",
-    "param": "stream",
-    "code": "streaming_not_supported_yet"
-  }
-}
+for chunk in stream:
+    if chunk.choices[0].delta.content is not None:
+        parts.append(chunk.choices[0].delta.content)
+
+print("".join(parts))
 ```
 
-当前 `stream=true` 返回 HTTP 400，并明确保留到 Chat-Day4；不会错误复用旧 `/chat/stream` 的 `meta/token/usage/done/error` 事件。
+Chat-Day4 实测输出：
+
+```text
+[mock-stream] [mock] you said: hello from sdk stream
+```
+
+`local-test-key` 当前只满足 SDK 初始化；网关 API Key 鉴权安排在 Chat-Day9。
+
+### Streaming error contract
+
+SSE 通道建立后不能再切换为 HTTP 502，因此 Provider 失败时输出可解析的 data-only error：
+
+```text
+data: {"error":{"message":"...","type":"api_error","param":null,"code":"provider_error"}}
+
+```
+
+失败流：
+
+```text
+不输出 finish chunk
+不输出 usage chunk
+不输出 data: [DONE]
+```
+
+正常流只使用：
+
+```text
+data: ...
+```
+
+不会泄漏旧接口的：
+
+```text
+event: meta
+event: token
+event: usage
+event: done
+event: error
+```
 
 ---
 
@@ -620,7 +814,7 @@ data: <string-or-json>
 
 ```bash
 pytest -q
-# 87 passed (Chat-Day3)
+# 92 passed (Chat-Day4)
 ```
 
 Chat-Day2 新增/覆盖：
@@ -632,23 +826,44 @@ tests/stream/test_stream_provider_compatibility.py
 tests/prompt/test_prompt_compare_provider_compatibility.py
 ```
 
-Chat-Day3 新增：
+Chat-Day3 / Day4：
 
 ```text
 tests/openai_compat/test_chat_completions.py
+tests/openai_compat/test_chat_completions_stream.py
 ```
 
-Chat-Day3 测试覆盖：
+Chat-Day4 验收：
 
 ```text
-非流式 chat.completion 响应结构
-provider override
-默认 Provider 配置
-Provider usage 映射
-stream=true Day4 边界
-n > 1 拒绝
-OpenAI-compatible validation error
-OpenAIProvider 缺少 API key 时的 502 error shape
+pytest tests/openai_compat -q
+12 passed
+
+pytest tests/stream -q
+9 passed
+
+pytest -q
+92 passed in 6.82s
+
+GitHub Actions CI
+green
+```
+
+Day4 测试锁定：
+
+```text
+stream=false 非流式回归
+stream=true text/event-stream
+首个 assistant role chunk
+content delta 重建与空格 token 保留
+统一 id / created / model
+finish_reason 与空 delta
+include_usage=true 的 choices=[] usage chunk
+include_usage=false 不输出 usage
+不完整 usage 不伪造
+Provider 流中失败输出 OpenAI-compatible error
+失败流不输出 [DONE]
+旧 /chat/stream 契约不变
 ```
 
 ---
@@ -1865,7 +2080,7 @@ p95_latency_ms = 2750
 All regression gates passed!
 ```
 
-### v2-plus Current Status (Chat-Day3 completed)
+### v2-plus Current Status (Chat-Day4 completed)
 
 `chat-api v2-langchain-rag` 继续作为 RAG / LangChain / Hybrid RAG / Eval Workflow 项目基线保留；当前开发分支为：
 
@@ -1889,78 +2104,76 @@ Chat-Day3 已完成 OpenAI-compatible 非流式入口：
 
 ```text
 POST /v1/chat/completions
-独立 OpenAI-compatible request / response / error schemas
-OpenAICompatRoute validation error adapter
-ChatProvider / ProviderFactory 复用
+独立 request / response / error schemas
+OpenAICompatRoute validation adapter
+chat.completion 标准响应
 provider gateway extension
 OPENAI_COMPAT_DEFAULT_PROVIDER
-chat.completion 标准响应形状
-可选 usage 映射
-stream=true 明确返回 Chat-Day4 边界错误
-n=1 边界
-官方 Python OpenAI SDK 客户端实测
+官方 Python OpenAI SDK 非流式实测
 ```
 
-关键文件：
+Chat-Day4 已完成标准 SSE：
 
 ```text
-src/app/api/openai_compat/__init__.py
-src/app/api/openai_compat/errors.py
-src/app/api/openai_compat/route.py
-src/app/api/openai_compat/routes_chat_completions.py
-src/app/api/openai_compat/schemas.py
-tests/openai_compat/test_chat_completions.py
+stream=true
+Content-Type: text/event-stream
+data: {chat.completion.chunk JSON}
+choices[].delta.role
+choices[].delta.content
+finish_reason
+stream_options.include_usage
+choices=[] usage chunk
+data: [DONE]
+流内 OpenAI-compatible error
+失败流不发送 [DONE]
+官方 Python OpenAI SDK stream=True 实测
+```
+
+关键新增文件：
+
+```text
+src/app/api/openai_compat/streaming.py
+tests/openai_compat/test_chat_completions_stream.py
+```
+
+关键兼容性：
+
+```text
+/chat 未修改
+/chat/stream 未修改
+/prompt/compare 未修改
+src/app/llm/providers 未修改
+RAG 未修改
+PromptHub / Replay 未修改
+旧 /chat/stream 保持 meta → token* → usage → done / error
 ```
 
 最终验收：
 
 ```text
-Day3 tests -> 7 passed
-pytest -q -> 87 passed in 6.10s / 6.11s
+tests/openai_compat -> 12 passed
+tests/stream -> 9 passed
+pytest -q -> 92 passed in 6.82s
 GitHub Actions CI -> green
-commit -> 732f084 feat(day3): add OpenAI-compatible chat completions
-working tree -> clean
-```
-
-真实兼容性验证：
-
-```text
-curl 非流式请求成功
-object = chat.completion
-id = chatcmpl-...
-choices[0].message.role = assistant
-choices[0].logprobs = null
-未知 usage 被省略
-openai 2.45.0 Python SDK 调用成功
-extra_body provider override 调用成功
-stream=true 返回 HTTP 400 OpenAI error shape
-schema validation 返回 OpenAI error shape，不返回 FastAPI detail
-```
-
-兼容性边界：
-
-```text
-/chat、/chat/stream、/prompt/compare 未修改
-RAG、PromptHub、Replay 行为未修改
-旧 /chat/stream SSE 契约保持 meta → token* → usage → done / error
-/v1/chat/completions 的标准流式协议留给 Chat-Day4
+curl SSE manual check -> passed
+openai 2.45.0 stream client -> passed
 ```
 
 下一里程碑：
 
 ```text
-Chat-Day4: OpenAI-compatible SSE streaming
+Chat-Day5: Conversation / Message database tables
 ```
 
-Chat-Day4 应在 `/v1/chat/completions` 的 `stream=true` 分支实现：
+Day5 应建立：
 
 ```text
-Content-Type: text/event-stream
-data: {chat.completion.chunk JSON}
-choices[].delta
-finish_reason
-可选 usage chunk
-data: [DONE]
+Conversation
+Message
+数据库初始化与迁移边界
+repository / service 基础
+最小 CRUD contract
+测试隔离数据库
 ```
 
-同时不得改变旧 `/chat/stream` 的自定义 SSE 契约。
+暂不在 Day5 提前实现完整历史拼接和上下文截断；这些属于 Chat-Day6。
