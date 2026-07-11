@@ -81,26 +81,47 @@ Chat-Day6:
   稳定 sequence_no、历史加载、上下文窗口截断、同步/流式成功原子落库，
   以及 Provider 失败或客户端断开时不保存不完整消息。
 
+Chat-Day7:
+  完成独立 UsageRecord、provider_native/local_estimate/unavailable 区分、
+  同步与流式统一 token accounting，以及 succeeded/provider_failed/
+  client_disconnected/persistence_failed 请求终态语义。
+
+Chat-Day8:
+  完成版本化价格目录、Decimal 成本估算、UsageCost 历史快照、
+  usage/cost 原子持久化，以及 records/summary/daily/providers/models 查询 API。
+```
+
 Current validation:
-  pytest tests/chat -q -> 14 passed
-  pytest tests/conversations -q -> 7 passed
-  pytest tests/db -q -> 14 passed
-  pytest tests/stream -q -> 16 passed
-  pytest tests/openai_compat -q -> 12 passed
-  pytest -q -> 126 passed
-  GitHub Actions CI -> success
-  commit -> d60c5e3
+
+```text
+pytest tests/chat -q -> 20 passed
+pytest tests/conversations -q -> 7 passed
+pytest tests/db -q -> 26 passed
+pytest tests/stream -q -> 24 passed
+pytest tests/usage -q -> 6 passed
+pytest tests/cost -q -> 9 passed
+pytest tests/usage_api -q -> 7 passed
+pytest tests/openai_compat -q -> 12 passed
+pytest -q -> 174 passed
+manual API / DB acceptance -> passed
+GitHub Actions CI -> success
+Day7 commit -> bab036c
+Day8 test isolation fix -> 973b5a6
+Day8 feature commit -> 22bd6c9
+```
 
 Local-only roadmap:
-  LLM_GATEWAY_ROADMAP.md，不进入 git。
+
+```text
+LLM_GATEWAY_ROADMAP.md，不进入 git。
 ```
 
 ### 下一步
 
 ```text
-Chat-Day7:
-  设计并实现请求级 Token usage 记录，
-  明确同步、流式、Provider 原生 usage 与估算 usage 的统一边界。
+Chat-Day9:
+  实现 API Key 鉴权，明确 key hash、状态、作用域、吊销、
+  认证错误契约以及与公开健康检查/文档接口的边界。
 ```
 <!-- LLM_GATEWAY_PLUS_END -->
 
@@ -116,6 +137,9 @@ Chat-Day7:
 * Multi-conversation history：`conversation_id`、历史加载、最近 N 轮 / token budget 截断
 * Conversation API：创建、列表、查询、重命名、删除与消息分页查询
 * Persistence semantics：同步/流式仅在完整成功后原子保存本轮 user/assistant；失败或客户端断开不保存半轮消息
+* Token usage accounting：独立 `UsageRecord` 记录请求级 token、状态、来源、trace/conversation/provider/model/latency；不写入 Message
+* Cost estimation：版本化 `pricing_catalog.json`、Decimal 精度、独立 `UsageCost` 历史快照，区分 `estimated|unknown_price|usage_unavailable`
+* Usage reporting API：`/usage/pricing|records|summary|daily|providers|models`，支持时间范围、状态、Provider/Model、分页与多币种分组
 * 全局中间件：`x-trace-id` + latency 日志
 * 统一 ChatProvider：MockProvider / OllamaProvider / OpenAIProvider
 * ProviderFactory：屏蔽不同模型服务调用差异，OpenAI SDK 按需懒加载
@@ -213,7 +237,8 @@ curl http://localhost:8000/health
 * `OPENAI_MODEL`：OpenAI Provider 默认模型；请求体 `model` 优先级更高
 * `OPENAI_TIMEOUT_S` (default: `60`)
 * `OPENAI_COMPAT_DEFAULT_PROVIDER` (default: `mock`)：`/v1/chat/completions` 未传网关扩展字段 `provider` 时使用的默认 Provider
-* `DATABASE_URL` (default: `sqlite:///./data/chat_api.db`)：Conversation / Message 关系数据库连接地址；未来可切换 PostgreSQL
+* `DATABASE_URL` (default: `sqlite:///./data/chat_api.db`)：Conversation / Message / UsageRecord / UsageCost 关系数据库连接地址；未来可切换 PostgreSQL
+* `PRICING_CATALOG_PATH` (default: `config/pricing_catalog.json`)：版本化 Provider/Model prompt/completion 单价目录
 * `CONVERSATION_HISTORY_MAX_TURNS` (default: `10`)：最多保留的最近 user-led 历史轮数
 * `CONVERSATION_CONTEXT_TOKEN_BUDGET` (default: `4096`)：历史 + 当前请求 + system prompt 的估算 token 上限
 * `CONVERSATION_HISTORY_FETCH_LIMIT` (default: `500`)：从数据库读取的最大历史消息条数
@@ -667,6 +692,8 @@ database initialized: sqlite:///./data/chat_api.db
 ```text
 conversations
 messages
+usage_records
+usage_costs
 ```
 
 本地数据库目录：
@@ -706,18 +733,19 @@ Conversation delete
   → Message ON DELETE CASCADE
 ```
 
-单条 Message 只保存消息级 `token_count`。请求级：
+单条 Message 只保存消息级 `token_count`。请求级统计与成本不写入 Message：
 
 ```text
-prompt_tokens
-completion_tokens
-total_tokens
-estimated_cost
-latency_ms
-trace_id
+UsageRecord:
+  prompt_tokens / completion_tokens / total_tokens
+  status / usage_source / trace_id / latency_ms
+
+UsageCost:
+  pricing_key / pricing_version / currency / unit_tokens
+  prompt_cost / completion_cost / estimated_cost / cost_status
 ```
 
-暂不放入 Message 表，后续由独立 usage/request 记录承载。
+该边界避免把请求级计费字段重复写入多条 Message，并允许 Conversation 删除后保留独立 accounting 事实。
 
 ### Architecture
 
@@ -1072,6 +1100,258 @@ event: push
 
 ---
 
+## Token Usage Accounting (Chat-Day7)
+
+Chat-Day7 将请求级 token accounting 从 Message 中拆出，新增独立 `UsageRecord`：
+
+```text
+request_id
+trace_id
+conversation_id
+request_kind
+provider
+model
+status
+usage_source
+prompt_tokens
+completion_tokens
+total_tokens
+latency_ms
+error_type
+created_at
+```
+
+Usage 来源：
+
+```text
+provider_native:
+  Provider 返回完整 prompt/completion/total tokens。
+
+local_estimate:
+  Provider 未返回完整 usage，网关根据最终请求消息和完成文本估算。
+
+unavailable:
+  请求未得到足够信息，token 字段保持 NULL，不伪造为 0。
+```
+
+请求终态：
+
+```text
+succeeded
+provider_failed
+client_disconnected
+persistence_failed
+```
+
+持久化边界：
+
+```text
+stateful success:
+  Message + UsageRecord 同一事务提交。
+
+stateless success:
+  只保存 UsageRecord。
+
+provider_failed / client_disconnected:
+  不保存不完整 Message；
+  仍保存已知或 unavailable 的请求级 accounting。
+
+persistence_failed:
+  主事务回滚后，另行保留已消费的 usage 事实。
+```
+
+Day7 commit：
+
+```text
+bab036c feat(day7): add token usage accounting
+```
+
+最终验证：
+
+```text
+pytest -q -> 147 passed
+GitHub Actions CI -> success
+```
+
+---
+
+## Cost Estimation and Usage Reporting (Chat-Day8)
+
+Chat-Day8 在 Day7 `UsageRecord` 事实表上增加版本化价格目录、不可变成本快照和只读聚合 API。
+
+### Pricing catalog
+
+默认目录：
+
+```text
+config/pricing_catalog.json
+```
+
+目录字段：
+
+```text
+version
+currency
+unit_tokens
+prices[]:
+  provider
+  model
+  prompt_price_per_unit
+  completion_price_per_unit
+```
+
+匹配顺序：
+
+```text
+provider:model exact match
+→ provider:* wildcard match
+→ unknown_price
+```
+
+默认本地 Provider：
+
+```text
+mock:*   -> USD 0 / 1,000,000 tokens
+ollama:* -> USD 0 / 1,000,000 tokens
+```
+
+零价格表示网关外部 API 账单为零，不包含本地 GPU、电力和服务器基础设施成本。
+
+### UsageCost snapshot
+
+每个新 `UsageRecord` 对应一条 `UsageCost`：
+
+```text
+request_id
+pricing_key
+matched_pricing_key
+pricing_version
+currency
+unit_tokens
+cost_status
+prompt_price_per_unit
+completion_price_per_unit
+prompt_cost
+completion_cost
+estimated_cost
+created_at
+```
+
+`UsageCost` 保存请求发生时的价格快照；后续修改价格目录不会改变历史成本。
+
+成本状态：
+
+```text
+estimated:
+  token 已知且命中价格；显式零价格也属于 estimated。
+
+unknown_price:
+  token 已知但目录无匹配价格；金额字段为 NULL，不能写成 0。
+
+usage_unavailable:
+  token 不可用；金额字段为 NULL。
+```
+
+金额使用 `Decimal` 和 `NUMERIC(24, 12)`，API 以字符串输出，避免 JSON float 精度损失。
+
+### Atomic persistence
+
+```text
+stateful success:
+  Message + UsageRecord + UsageCost 同一事务。
+
+stateless success:
+  UsageRecord + UsageCost 同一事务。
+
+provider_failed / client_disconnected:
+  保存请求级 UsageRecord + UsageCost；
+  不保存部分 Message。
+
+persistence_failed:
+  主事务回滚；
+  补偿记录已消费 usage 与对应 cost snapshot。
+```
+
+### Usage API
+
+```text
+GET /usage/pricing
+GET /usage/records
+GET /usage/summary
+GET /usage/daily
+GET /usage/providers
+GET /usage/models
+```
+
+通用过滤条件：
+
+```text
+start_time     inclusive，必须带 timezone
+end_time       exclusive，必须带 timezone
+status
+usage_source
+cost_status
+provider
+model
+conversation_id
+request_kind
+limit
+offset
+```
+
+`cost_status=missing_snapshot` 用于查询历史 Day7 数据：这类记录没有 `UsageCost`，查询时不会使用当前价格重新估算。
+
+聚合输出包含：
+
+```text
+request_count
+statuses
+usage_sources
+prompt_tokens
+completion_tokens
+total_tokens
+total_latency_ms
+average_latency_ms
+cost_statuses
+costs_by_currency
+```
+
+不同币种不会直接混合求和，而是按 `currency` 分组。
+
+### Day8 validation
+
+```text
+Day8-A pricing/catalog/model/repository/service:
+  pytest -q -> 162 passed
+
+Day8-B sync/stream/failure/disconnect integration:
+  pytest -q -> 167 passed
+
+Day8-C usage query and aggregation API:
+  pytest -q -> 174 passed
+```
+
+手动验收确认：
+
+```text
+6 UsageRecord
+6 UsageCost snapshots
+6 stateful Messages
+stateless request no Message
+sync/stream failure no Message
+summary token/latency arithmetic correct
+provider/model/day aggregation correct
+timezone-less range rejected with HTTP 422
+client disconnect deterministic test passed
+```
+
+Git：
+
+```text
+973b5a6 fix(day8): initialize isolated default test database
+22bd6c9 feat(day8): add cost estimation and usage reporting
+GitHub Actions CI: success
+```
 ## API: Sync Chat
 
 ### Sync chat (mock)
@@ -1279,7 +1559,7 @@ data: <string-or-json>
 
 ```bash
 pytest -q
-# 126 passed (Chat-Day6)
+# 174 passed (Chat-Day8)
 ```
 
 Chat-Day2：
@@ -1298,68 +1578,87 @@ tests/openai_compat/test_chat_completions.py
 tests/openai_compat/test_chat_completions_stream.py
 ```
 
-Chat-Day5：
+Chat-Day5 / Day6：
 
 ```text
-tests/db/conftest.py
-tests/db/test_session.py
-tests/db/test_conversation_repository.py
-tests/db/test_message_repository.py
-tests/db/test_conversation_service.py
-```
-
-Chat-Day6：
-
-```text
-tests/conversations/conftest.py
-tests/conversations/test_context_window.py
-tests/conversations/test_conversation_api.py
+tests/db/
+tests/conversations/
 tests/chat/test_chat_conversation_history.py
 tests/stream/test_stream_conversation_history.py
 ```
 
-Chat-Day6 验收：
+Chat-Day7：
+
+```text
+tests/usage/test_accounting.py
+tests/chat/test_chat_usage_accounting.py
+tests/stream/test_stream_usage_accounting.py
+tests/db/test_usage_record_repository.py
+tests/db/test_usage_service.py
+```
+
+Chat-Day8：
+
+```text
+tests/cost/test_pricing_catalog.py
+tests/cost/test_estimator.py
+tests/db/test_usage_cost_repository.py
+tests/db/test_usage_cost_service.py
+tests/chat/test_chat_cost_accounting.py
+tests/stream/test_stream_cost_accounting.py
+tests/usage_api/test_usage_api.py
+```
+
+Chat-Day8 最终验收：
 
 ```text
 pytest tests/chat -q
-14 passed
+20 passed
 
 pytest tests/conversations -q
 7 passed
 
 pytest tests/db -q
-14 passed
+26 passed
 
 pytest tests/stream -q
-16 passed
+24 passed
+
+pytest tests/usage -q
+6 passed
+
+pytest tests/cost -q
+9 passed
+
+pytest tests/usage_api -q
+7 passed
 
 pytest tests/openai_compat -q
 12 passed
 
 pytest -q
-126 passed in 8.17s
+174 passed
 
 GitHub Actions CI
 success
 ```
 
-Day6 测试锁定：
+Day7/Day8 测试锁定：
 
 ```text
-conversation_id 可选边界
-无状态请求不访问数据库
-Conversation CRUD 与消息分页查询
-sequence_no 连续、唯一和稳定排序
-历史 + 当前请求的 Provider message 顺序
-最近 N 轮与 token budget 截断
-同步成功原子保存 user / assistant
-流式成功在 usage / done 前保存
-PromptHub / RAG server system prompt 不落库
-不存在 Conversation 在 Provider 前返回 404
-同步 Provider 失败不落库
-流式 Provider 失败不落库且无 usage / done
-客户端断开不保存部分 assistant
-OpenAI-compatible 与旧 SSE 契约无回归
+Provider 原生 usage 与本地估算 usage 的明确区分
+usage unavailable 不伪造 token 为 0
+成功、Provider 失败、客户端断开、持久化失败的请求级记录
+Message 表不保存请求级 usage/cost
+价格目录 exact/wildcard 匹配与版本快照
+prompt/completion 分离计价与 Decimal 固定精度
+显式零价格与 unknown_price 的区分
+UsageRecord + UsageCost 一对一原子持久化
+历史 Day7 记录允许 missing_snapshot，不按当前价格回填
+records 时间/状态/provider/model/cost_status 过滤与分页
+summary/daily/providers/models 聚合
+不同币种按 currency 分组，不直接混加
+OpenAI-compatible、旧 SSE、RAG、PromptHub、Replay 无回归
 ```
 
 ---
@@ -2576,7 +2875,7 @@ p95_latency_ms = 2750
 All regression gates passed!
 ```
 
-### v2-plus Current Status (Chat-Day6 completed)
+### v2-plus Current Status (Chat-Day8 completed)
 
 `chat-api v2-langchain-rag` 继续作为 RAG / LangChain / Hybrid RAG / Eval Workflow 项目基线保留；当前开发分支为：
 
@@ -2588,7 +2887,7 @@ v2-langchain-rag-plus
 
 ```text
 Chat-Day2:
-  统一 ChatProvider / ProviderFactory；
+  ChatProvider / ProviderFactory；
   Mock / Ollama / OpenAI Provider；
   request-level provider/model override。
 
@@ -2601,16 +2900,25 @@ Chat-Day4:
 Chat-Day5:
   SQLAlchemy 2.x 持久化基础；
   Conversation / Message ORM；
-  SQLite / PostgreSQL boundary；
-  repository / service / isolated tests。
+  SQLite / PostgreSQL boundary。
 
 Chat-Day6:
-  Conversation HTTP API；
-  conversation_id 可选边界；
-  sequence_no 稳定排序；
-  历史加载与 context window；
-  同步/流式成功后原子落库；
-  Provider 失败与客户端断开不保存半轮消息。
+  Conversation API、历史加载、context window；
+  stateful/stateless boundary；
+  同步/流式成功后原子落库。
+
+Chat-Day7:
+  独立 UsageRecord；
+  provider_native/local_estimate/unavailable；
+  succeeded/provider_failed/client_disconnected/persistence_failed；
+  请求级 usage 不写入 Message。
+
+Chat-Day8:
+  versioned pricing catalog；
+  Decimal cost estimator；
+  UsageCost immutable snapshot；
+  Message + UsageRecord + UsageCost atomic persistence；
+  usage records/summary/daily/providers/models API。
 ```
 
 当前数据模型：
@@ -2623,53 +2931,86 @@ Message:
   id / conversation_id / sequence_no /
   role / content / provider / model /
   token_count / created_at
+
+UsageRecord:
+  request_id / trace_id / conversation_id /
+  request_kind / provider / model /
+  status / usage_source /
+  prompt_tokens / completion_tokens / total_tokens /
+  latency_ms / error_type / created_at
+
+UsageCost:
+  request_id / pricing_key / matched_pricing_key /
+  pricing_version / currency / unit_tokens /
+  cost_status /
+  prompt_price_per_unit / completion_price_per_unit /
+  prompt_cost / completion_cost / estimated_cost /
+  created_at
 ```
 
-当前原生聊天边界：
+当前 API：
 
 ```text
-/chat 和 /chat/stream:
-  不传 conversation_id → 无状态；
-  传 conversation_id → 服务端历史 + 持久化。
+POST /chat
+POST /chat/stream
+POST /v1/chat/completions
+POST /prompt/compare
 
-/v1/chat/completions:
-  保持独立 OpenAI-compatible 无状态接口。
+Conversation:
+  POST /conversations
+  GET /conversations
+  GET/PATCH/DELETE /conversations/{id}
+  GET /conversations/{id}/messages
+
+Usage and cost:
+  GET /usage/pricing
+  GET /usage/records
+  GET /usage/summary
+  GET /usage/daily
+  GET /usage/providers
+  GET /usage/models
 ```
 
 最终验收：
 
 ```text
-tests/chat -> 14 passed
-tests/conversations -> 7 passed
-tests/db -> 14 passed
-tests/stream -> 16 passed
-tests/openai_compat -> 12 passed
-pytest -q -> 126 passed in 8.17s
-manual API acceptance -> passed
-database sequence check -> unique and continuous
-sync provider failure no-write -> passed
-stream provider failure no-write -> passed
-client disconnect no-write -> deterministic test passed
+pytest tests/chat -q -> 20 passed
+pytest tests/conversations -q -> 7 passed
+pytest tests/db -q -> 26 passed
+pytest tests/stream -q -> 24 passed
+pytest tests/usage -q -> 6 passed
+pytest tests/cost -q -> 9 passed
+pytest tests/usage_api -q -> 7 passed
+pytest tests/openai_compat -q -> 12 passed
+pytest -q -> 174 passed
+
+manual usage/cost API acceptance -> passed
+UsageRecord / UsageCost one-to-one check -> passed
+stateful/stateless message boundary -> passed
+sync/stream failure accounting -> passed
+client disconnect accounting -> deterministic test passed
 GitHub Actions CI -> success
-commit -> d60c5e3
-workflow run -> 29145652536
-data/chat_api.db -> ignored runtime artifact
+
+Day7 commit -> bab036c
+Day8 test isolation fix -> 973b5a6
+Day8 feature commit -> 22bd6c9
 ```
 
 下一里程碑：
 
 ```text
-Chat-Day7: Token usage accounting
+Chat-Day9: API Key authentication
 ```
 
-Day7 应优先明确：
+Day9 应优先明确：
 
 ```text
-Provider 原生 usage 与本地估算 usage 的区分
-同步与流式统一 usage record
-request / trace / conversation 关联
-prompt_tokens / completion_tokens / total_tokens
-失败请求是否记录 usage
-避免把请求级 usage 强塞进 Message 表
-为 Day8 cost estimation 和 usage summary API 建立数据边界
+API key 仅存 hash，不存明文
+key id / prefix / name / status / created_at / revoked_at
+认证成功后的 caller identity
+公开路径与受保护路径边界
+missing / invalid / revoked key 错误契约
+OpenAI-compatible Authorization: Bearer 兼容
+原生 API 的 header 兼容策略
+测试隔离、CI 与迁移边界
 ```
