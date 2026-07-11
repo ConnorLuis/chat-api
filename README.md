@@ -72,10 +72,15 @@ Chat-Day4:
   支持 chat.completion.chunk、choices[].delta、finish_reason、
   可选 usage chunk、data: [DONE] 和流内 error，并保持旧 /chat/stream 契约不变。
 
+Chat-Day5:
+  完成 SQLAlchemy 2.x 持久化基础、SQLite 开发存储与 PostgreSQL 迁移边界、
+  Conversation / Message ORM、session、repository/service、外键级联与隔离测试。
+
 Current validation:
+  pytest tests/db -q -> 13 passed
   pytest tests/openai_compat -q -> 12 passed
   pytest tests/stream -q -> 9 passed
-  pytest -q -> 92 passed
+  pytest -q -> 105 passed
   GitHub Actions CI -> green
 
 Local-only roadmap:
@@ -85,9 +90,9 @@ Local-only roadmap:
 ### 下一步
 
 ```text
-Chat-Day5:
-  设计并实现 Conversation / Message 数据库表与持久化基础，
-  为后续多会话历史、上下文截断和 usage 统计建立数据模型。
+Chat-Day6:
+  将 Conversation / Message 接入聊天主链路，
+  实现多会话历史加载、消息持久化与上下文窗口截断。
 ```
 <!-- LLM_GATEWAY_PLUS_END -->
 
@@ -99,6 +104,7 @@ Chat-Day5:
 * `POST /chat/stream`：SSE 流式聊天（`provider=mock|ollama|openai`），事件：`meta/token/usage/done/error`
 * `POST /prompt/compare`：通过统一 Provider 层执行 Prompt A/B Compare
 * `POST /v1/chat/completions`：OpenAI-compatible Chat Completions，支持非流式 `chat.completion` 与流式 `chat.completion.chunk`，并支持网关 `provider` override
+* Conversation persistence foundation：SQLAlchemy 2.x、SQLite、Conversation / Message、repository/service、隔离测试
 * 全局中间件：`x-trace-id` + latency 日志
 * 统一 ChatProvider：MockProvider / OllamaProvider / OpenAIProvider
 * ProviderFactory：屏蔽不同模型服务调用差异，OpenAI SDK 按需懒加载
@@ -196,6 +202,7 @@ curl http://localhost:8000/health
 * `OPENAI_MODEL`：OpenAI Provider 默认模型；请求体 `model` 优先级更高
 * `OPENAI_TIMEOUT_S` (default: `60`)
 * `OPENAI_COMPAT_DEFAULT_PROVIDER` (default: `mock`)：`/v1/chat/completions` 未传网关扩展字段 `provider` 时使用的默认 Provider
+* `DATABASE_URL` (default: `sqlite:///./data/chat_api.db`)：Conversation / Message 关系数据库连接地址；未来可切换 PostgreSQL
 * `RUN_LOG_PATH` (default: `runs/prompt_runs.jsonl`)
 * `KB_DIR` (default: `kb`)
 * `KB_CHROMA_DIR` (default: `${KB_DIR}/chroma`)
@@ -608,6 +615,211 @@ event: error
 
 ---
 
+## Conversation Persistence Foundation (Chat-Day5)
+
+Chat-Day5 新增关系数据库持久化基础，但尚未把历史消息自动接入聊天路由。
+
+### Storage strategy
+
+```text
+ORM: SQLAlchemy 2.x
+Local development: SQLite
+Default URL: sqlite:///./data/chat_api.db
+Future production: PostgreSQL
+```
+
+未来切换 PostgreSQL 时，主要通过 `DATABASE_URL` 替换连接地址：
+
+```text
+postgresql+psycopg://user:password@host:5432/chat_api
+```
+
+Day5 避免使用 SQLite 专属列类型和手写 `sqlite3` SQL，模型仅使用 SQLAlchemy 通用类型与 ORM API。
+
+### Database initialization
+
+```bash
+python -m src.app.db
+```
+
+预期：
+
+```text
+database initialized: sqlite:///./data/chat_api.db
+```
+
+默认创建：
+
+```text
+conversations
+messages
+```
+
+本地数据库目录：
+
+```text
+data/
+```
+
+已加入 `.gitignore`，不会提交运行时数据库文件。
+
+### Conversation model
+
+```text
+id: UUID string
+title: nullable string
+created_at: UTC datetime
+updated_at: UTC datetime
+```
+
+### Message model
+
+```text
+id: UUID string
+conversation_id: foreign key
+role: developer/system/user/assistant
+content: text
+provider: nullable string
+model: nullable string
+token_count: nullable integer
+created_at: UTC datetime
+```
+
+外键规则：
+
+```text
+Conversation delete
+  → Message ON DELETE CASCADE
+```
+
+单条 Message 只保存消息级 `token_count`。请求级：
+
+```text
+prompt_tokens
+completion_tokens
+total_tokens
+estimated_cost
+latency_ms
+trace_id
+```
+
+暂不放入 Message 表，后续由独立 usage/request 记录承载。
+
+### Architecture
+
+```text
+ORM model
+  → Repository
+  → Service
+  → Future API route
+```
+
+职责：
+
+```text
+Model:
+  表结构和 relationship。
+
+Repository:
+  add / flush / query / delete；
+  不负责 commit。
+
+Service:
+  参数规范化；
+  Conversation 存在性检查；
+  跨 repository 编排；
+  commit / rollback。
+
+API route:
+  Chat-Day5 未接入数据库。
+```
+
+关键模块：
+
+```text
+src/app/db/base.py
+src/app/db/session.py
+src/app/db/types.py
+src/app/db/utils.py
+src/app/db/models/
+src/app/db/repositories/
+src/app/services/conversation_service.py
+tests/db/
+```
+
+### Session boundary
+
+默认 engine 和 session factory 使用懒加载，导入数据库模块不会立即创建本地文件。
+
+SQLite 专属连接配置只在 SQLite backend 生效：
+
+```text
+check_same_thread=False
+PRAGMA foreign_keys=ON
+```
+
+PostgreSQL 不会收到这些连接参数。
+
+### UTC time boundary
+
+新增 `UTCDateTime`：
+
+```text
+SQLite:
+  bind 时存 UTC naive；
+  load 时恢复 UTC-aware。
+
+PostgreSQL:
+  使用 timezone-aware DateTime。
+```
+
+应用层始终使用 UTC-aware datetime。
+
+### Isolated tests
+
+每个数据库测试使用：
+
+```text
+tmp_path/chat_api_test.db
+```
+
+因此不会污染：
+
+```text
+data/chat_api.db
+kb/chroma/chroma.sqlite3
+```
+
+### Day5 boundaries
+
+Chat-Day5 未修改：
+
+```text
+/chat
+/chat/stream
+/v1/chat/completions
+/prompt/compare
+RAG
+PromptHub
+Replay
+Provider implementations
+```
+
+也未提前实现：
+
+```text
+自动保存聊天消息
+自动加载历史
+上下文窗口截断
+token budget
+Conversation HTTP API
+usage/cost 落库
+```
+
+这些属于 Chat-Day6 及后续阶段。
+
+---
+
 ## API: Sync Chat
 
 ### Sync chat (mock)
@@ -814,10 +1026,10 @@ data: <string-or-json>
 
 ```bash
 pytest -q
-# 92 passed (Chat-Day4)
+# 105 passed (Chat-Day5)
 ```
 
-Chat-Day2 新增/覆盖：
+Chat-Day2：
 
 ```text
 tests/providers/
@@ -833,9 +1045,22 @@ tests/openai_compat/test_chat_completions.py
 tests/openai_compat/test_chat_completions_stream.py
 ```
 
-Chat-Day4 验收：
+Chat-Day5：
 
 ```text
+tests/db/conftest.py
+tests/db/test_session.py
+tests/db/test_conversation_repository.py
+tests/db/test_message_repository.py
+tests/db/test_conversation_service.py
+```
+
+Chat-Day5 验收：
+
+```text
+pytest tests/db -q
+13 passed
+
 pytest tests/openai_compat -q
 12 passed
 
@@ -843,27 +1068,25 @@ pytest tests/stream -q
 9 passed
 
 pytest -q
-92 passed in 6.82s
+105 passed in 7.25s
 
 GitHub Actions CI
 green
 ```
 
-Day4 测试锁定：
+Day5 测试锁定：
 
 ```text
-stream=false 非流式回归
-stream=true text/event-stream
-首个 assistant role chunk
-content delta 重建与空格 token 保留
-统一 id / created / model
-finish_reason 与空 delta
-include_usage=true 的 choices=[] usage chunk
-include_usage=false 不输出 usage
-不完整 usage 不伪造
-Provider 流中失败输出 OpenAI-compatible error
-失败流不输出 [DONE]
-旧 /chat/stream 契约不变
+数据库 schema 初始化
+SQLite foreign_keys=ON
+Conversation create/get/list/update/delete
+Message create/get/list/delete
+不存在 Conversation 时拒绝孤儿 Message
+Conversation 删除级联删除 Message
+role/content/token_count 校验
+service commit / rollback
+临时 SQLite 数据库隔离
+现有 OpenAI-compatible 与旧 SSE 契约无回归
 ```
 
 ---
@@ -2080,7 +2303,7 @@ p95_latency_ms = 2750
 All regression gates passed!
 ```
 
-### v2-plus Current Status (Chat-Day4 completed)
+### v2-plus Current Status (Chat-Day5 completed)
 
 `chat-api v2-langchain-rag` 继续作为 RAG / LangChain / Hybrid RAG / Eval Workflow 项目基线保留；当前开发分支为：
 
@@ -2088,92 +2311,93 @@ All regression gates passed!
 v2-langchain-rag-plus
 ```
 
-Chat-Day2 已完成统一 Provider 层：
+Chat-Day2 已完成统一 Provider 层。
+
+Chat-Day3 已完成 OpenAI-compatible 非流式 `chat.completion`。
+
+Chat-Day4 已完成 OpenAI-compatible `chat.completion.chunk` SSE。
+
+Chat-Day5 已完成关系数据库持久化基础：
 
 ```text
-ChatProvider Protocol
-ProviderMessage / ProviderChatRequest / ProviderChatResponse
-ProviderChatChunk / ProviderUsage
-MockProvider / OllamaProvider / OpenAIProvider
-ProviderFactory
-request-level provider/model override
-/chat、/chat/stream、/prompt/compare 主链路迁移
+SQLAlchemy 2.0.51
+SQLAlchemy>=2.0,<2.1
+DATABASE_URL
+SQLite default database
+PostgreSQL migration boundary
+DeclarativeBase / Mapped / mapped_column
+Conversation model
+Message model
+Conversation → Message foreign key
+ON DELETE CASCADE
+UTCDateTime
+lazy Engine / Session factory
+init_db
+Repository layer
+ConversationService
+commit / rollback boundary
+isolated tmp_path SQLite tests
 ```
 
-Chat-Day3 已完成 OpenAI-compatible 非流式入口：
+数据模型：
 
 ```text
-POST /v1/chat/completions
-独立 request / response / error schemas
-OpenAICompatRoute validation adapter
-chat.completion 标准响应
-provider gateway extension
-OPENAI_COMPAT_DEFAULT_PROVIDER
-官方 Python OpenAI SDK 非流式实测
+Conversation:
+  id / title / created_at / updated_at
+
+Message:
+  id / conversation_id / role / content /
+  provider / model / token_count / created_at
 ```
 
-Chat-Day4 已完成标准 SSE：
+关键文件：
 
 ```text
-stream=true
-Content-Type: text/event-stream
-data: {chat.completion.chunk JSON}
-choices[].delta.role
-choices[].delta.content
-finish_reason
-stream_options.include_usage
-choices=[] usage chunk
-data: [DONE]
-流内 OpenAI-compatible error
-失败流不发送 [DONE]
-官方 Python OpenAI SDK stream=True 实测
+src/app/db/
+src/app/services/
+tests/db/
 ```
 
-关键新增文件：
-
-```text
-src/app/api/openai_compat/streaming.py
-tests/openai_compat/test_chat_completions_stream.py
-```
-
-关键兼容性：
+兼容性：
 
 ```text
 /chat 未修改
 /chat/stream 未修改
+/v1/chat/completions 未修改
 /prompt/compare 未修改
-src/app/llm/providers 未修改
+Provider 未修改
 RAG 未修改
 PromptHub / Replay 未修改
-旧 /chat/stream 保持 meta → token* → usage → done / error
 ```
 
 最终验收：
 
 ```text
+tests/db -> 13 passed
 tests/openai_compat -> 12 passed
 tests/stream -> 9 passed
-pytest -q -> 92 passed in 6.82s
+pytest -q -> 105 passed in 7.25s
 GitHub Actions CI -> green
-curl SSE manual check -> passed
-openai 2.45.0 stream client -> passed
+python -m src.app.db -> passed
+tables -> ['conversations', 'messages']
+data/chat_api.db -> ignored runtime artifact
 ```
 
 下一里程碑：
 
 ```text
-Chat-Day5: Conversation / Message database tables
+Chat-Day6: multi-conversation history and context window
 ```
 
-Day5 应建立：
+Day6 应实现：
 
 ```text
-Conversation
-Message
-数据库初始化与迁移边界
-repository / service 基础
-最小 CRUD contract
-测试隔离数据库
+conversation_id API/request boundary
+聊天消息持久化
+历史消息加载
+历史与当前请求合并
+上下文窗口截断
+明确 message ordering
+同步/流式失败时的事务语义
+Conversation / Message HTTP API 或最小查询能力
 ```
-
-暂不在 Day5 提前实现完整历史拼接和上下文截断；这些属于 Chat-Day6。
