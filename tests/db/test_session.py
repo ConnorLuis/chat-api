@@ -12,6 +12,7 @@ def test_database_schema_is_created(
     assert table_names == {
         "conversations",
         "messages",
+        "usage_records",
     }
 
 

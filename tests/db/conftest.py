@@ -8,17 +8,22 @@ from src.app.db.base import Base
 from src.app.db.models import (
     Conversation,
     Message,
+    UsageRecord,
 )
 from src.app.db.session import (
     build_engine,
     build_session_factory,
 )
-from src.app.services import ConversationService
+from src.app.services import (
+    ConversationService,
+    UsageService,
+)
 
 
 # 保证模型在 create_all 前注册。
 assert Conversation.__tablename__ == "conversations"
 assert Message.__tablename__ == "messages"
+assert UsageRecord.__tablename__ == "usage_records"
 
 
 @pytest.fixture
@@ -73,5 +78,14 @@ def conversation_service(
     db_session: Session,
 ) -> ConversationService:
     return ConversationService(
+        db_session
+    )
+
+
+@pytest.fixture
+def usage_service(
+    db_session: Session,
+) -> UsageService:
+    return UsageService(
         db_session
     )

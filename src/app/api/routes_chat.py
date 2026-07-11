@@ -16,15 +16,29 @@ from src.app.conversations import (
     ContextMessage,
     build_context_window,
     load_conversation_history,
-    persist_conversation_exchange,
 )
 from src.app.services import (
     ConversationNotFoundError,
+    NewUsageRecord,
+    USAGE_STATUS_CLIENT_DISCONNECTED,
+    USAGE_STATUS_PERSISTENCE_FAILED,
+    USAGE_STATUS_PROVIDER_FAILED,
+    USAGE_STATUS_SUCCEEDED,
 )
 from src.app.llm.schemas import ChatRequest, ChatResponse, ErrorResponse, RagMetadata, Citation  # 请求/响应模型
 from src.app.llm.providers import (
     build_provider_request,
     get_chat_provider,
+)
+from src.app.usage import (
+    USAGE_SOURCE_PROVIDER_NATIVE,
+    resolve_terminal_usage_snapshot,
+    resolve_usage_snapshot,
+    unavailable_usage_snapshot,
+)
+from src.app.usage.persistence import (
+    persist_sync_exchange_and_usage,
+    persist_usage_only,
 )
 from fastapi.responses import StreamingResponse # 流式响应
 from starlette.concurrency import run_in_threadpool
@@ -57,6 +71,32 @@ def provider_model(
 
 # 暂时保留旧名称，避免其他模块或历史代码直接导入时失效。
 engine_model = provider_model
+
+
+def build_usage_payload(
+    *,
+    request_id: str | None,
+    status: str,
+    snapshot,
+) -> dict:
+    """构造同步/流式共享的 usage accounting payload."""
+
+    return {
+        "request_id": request_id,
+        "status": status,
+        "usage_source": (
+            snapshot.usage_source
+        ),
+        "prompt_tokens": (
+            snapshot.prompt_tokens
+        ),
+        "completion_tokens": (
+            snapshot.completion_tokens
+        ),
+        "total_tokens": (
+            snapshot.total_tokens
+        ),
+    }
 
 def build_rag_prompt_context(context_text: str) -> str:
     return f"你是一个严谨助手 仅基于以下资料回答，并在回答末尾列出引用编号 \n\n<CONTEXT>\n{context_text}"
@@ -347,111 +387,325 @@ def chat(req: Request, body: Annotated[ChatRequest, Body(openapi_examples=CHAT_O
     )
 
     try:
-        provider_response = provider.chat(provider_request)
-        answer = provider_response.content
-
-        active_provider = (
-            provider_response.provider
-            or active_provider
+        provider_response = provider.chat(
+            provider_request
         )
-        active_model = (
-            provider_response.model
-            or active_model
-        )
-
-        # Provider 完整成功后才保存本轮消息。
-        # request messages + assistant 在一个事务内原子提交。
-        if conversation_id is not None:
-            try:
-                persist_conversation_exchange(
-                    session_factory=(
-                        get_session_factory()
-                    ),
-                    conversation_id=conversation_id,
-                    request_messages=[
-                        ContextMessage(
-                            role=message.role,
-                            content=message.content,
-                        )
-                        for message in current_messages
-                    ],
-                    assistant_content=answer,
-                    provider=active_provider,
-                    model=active_model,
-                    assistant_token_count=(
-                        provider_response
-                        .usage
-                        .completion_tokens
-                        if (
-                            provider_response.usage
-                            is not None
-                        )
-                        else None
-                    ),
-                )
-
-            except ConversationNotFoundError as exc:
-                # Conversation 可能在 Provider 调用期间被并发删除。
-                raise HTTPException(
-                    status_code=404,
-                    detail=(
-                        "Conversation not found"
-                    ),
-                ) from exc
-
-            except Exception as exc:
-                latency_ms = int(
-                    (
-                        time.perf_counter()
-                        - start
-                    )
-                    * 1000
-                )
-
-                err = build_error(
-                    trace_id,
-                    active_provider,
-                    active_model,
-                    latency_ms,
-                    (
-                        "conversation persistence "
-                        f"failed: {exc}"
-                    ),
-                )
-
-                raise HTTPException(
-                    status_code=500,
-                    detail=err,
-                ) from exc
-    except HTTPException:
-        raise
 
     except Exception as e:
-        latency_ms = int((time.perf_counter() - start) * 1000)
-        err = build_error(trace_id, active_provider, active_model, latency_ms, f"{active_provider} failed: {str(e)}")
+        latency_ms = int(
+            (
+                time.perf_counter()
+                - start
+            )
+            * 1000
+        )
+
+        unavailable = (
+            unavailable_usage_snapshot()
+        )
+        usage_record_error = None
+
+        try:
+            persist_usage_only(
+                session_factory=(
+                    get_session_factory()
+                ),
+                usage=NewUsageRecord(
+                    trace_id=trace_id,
+                    conversation_id=(
+                        conversation_id
+                    ),
+                    request_kind="chat_sync",
+                    provider=active_provider,
+                    model=active_model,
+                    status=(
+                        USAGE_STATUS_PROVIDER_FAILED
+                    ),
+                    usage_source=(
+                        unavailable.usage_source
+                    ),
+                    prompt_tokens=None,
+                    completion_tokens=None,
+                    total_tokens=None,
+                    latency_ms=latency_ms,
+                    error_type=(
+                        type(e).__name__
+                    ),
+                ),
+            )
+
+        except Exception as usage_exc:
+            # Accounting 失败不能覆盖原始 Provider 502。
+            usage_record_error = str(
+                usage_exc
+            )
+
+        err = build_error(
+            trace_id,
+            active_provider,
+            active_model,
+            latency_ms,
+            (
+                f"{active_provider} failed: "
+                f"{str(e)}"
+            ),
+        )
+
         record = {
             "trace_id": trace_id,
             "mode": "chat",
             "provider": active_provider,
             "model": active_model,
             "prompt_id": prompt_id,
-            "prompt_version": prompt_version if prompt_id else "none",
+            "prompt_version": (
+                prompt_version
+                if prompt_id
+                else "none"
+            ),
             "latency_ms": latency_ms,
-            "prompt_chars": len(system_text) if system_text else 0,
+            "prompt_chars": (
+                len(system_text)
+                if system_text
+                else 0
+            ),
             "output_chars": 0,
             "temperature": body.temperature,
             "top_p": body.top_p,
             "max_tokens": body.max_tokens,
             "rag_enabled": body.use_kb,
-            "rag_hits": rag_meta.hits if rag_meta else 0,
+            "rag_hits": (
+                rag_meta.hits
+                if rag_meta
+                else 0
+            ),
             "rag_error": rag_error,
             "context_chars": context_chars,
-            "error": str(e)
+            "error": str(e),
         }
-        append_jsonl(settings.RUN_LOG_PATH, record)
-        raise HTTPException(status_code=502, detail=err)
 
-    latency_ms = int((time.perf_counter() - start) * 1000)
+        if usage_record_error is not None:
+            record["usage_record_error"] = (
+                usage_record_error
+            )
+
+        append_jsonl(
+            settings.RUN_LOG_PATH,
+            record,
+        )
+
+        raise HTTPException(
+            status_code=502,
+            detail=err,
+        )
+
+    answer = provider_response.content
+
+    active_provider = (
+        provider_response.provider
+        or active_provider
+    )
+    active_model = (
+        provider_response.model
+        or active_model
+    )
+
+    latency_ms = int(
+        (
+            time.perf_counter()
+            - start
+        )
+        * 1000
+    )
+
+    usage_snapshot = resolve_usage_snapshot(
+        provider_usage=(
+            provider_response.usage
+        ),
+        messages=provider_request.messages,
+        completion_text=answer,
+    )
+
+    success_usage = NewUsageRecord(
+        trace_id=trace_id,
+        conversation_id=conversation_id,
+        request_kind="chat_sync",
+        provider=active_provider,
+        model=active_model,
+        status=USAGE_STATUS_SUCCEEDED,
+        usage_source=(
+            usage_snapshot.usage_source
+        ),
+        prompt_tokens=(
+            usage_snapshot.prompt_tokens
+        ),
+        completion_tokens=(
+            usage_snapshot.completion_tokens
+        ),
+        total_tokens=(
+            usage_snapshot.total_tokens
+        ),
+        latency_ms=latency_ms,
+    )
+
+    # Message.token_count 只保存 Provider 原生且完整的
+    # assistant completion token 数；本地估算的请求级
+    # usage 仅进入 UsageRecord。
+    assistant_token_count = (
+        usage_snapshot.completion_tokens
+        if (
+            usage_snapshot.usage_source
+            == USAGE_SOURCE_PROVIDER_NATIVE
+        )
+        else None
+    )
+
+    try:
+        usage_record = (
+            persist_sync_exchange_and_usage(
+                session_factory=(
+                    get_session_factory()
+                ),
+                conversation_id=(
+                    conversation_id
+                ),
+                request_messages=[
+                    ContextMessage(
+                        role=message.role,
+                        content=message.content,
+                    )
+                    for message
+                    in current_messages
+                ],
+                assistant_content=answer,
+                provider=active_provider,
+                model=active_model,
+                assistant_token_count=(
+                    assistant_token_count
+                ),
+                usage=success_usage,
+            )
+        )
+
+    except ConversationNotFoundError as exc:
+        # Provider 已完成调用但会话被并发删除：
+        # 消息事务已回滚，另行保留 consumed usage。
+        try:
+            persist_usage_only(
+                session_factory=(
+                    get_session_factory()
+                ),
+                usage=NewUsageRecord(
+                    trace_id=trace_id,
+                    conversation_id=(
+                        conversation_id
+                    ),
+                    request_kind="chat_sync",
+                    provider=active_provider,
+                    model=active_model,
+                    status=(
+                        USAGE_STATUS_PERSISTENCE_FAILED
+                    ),
+                    usage_source=(
+                        usage_snapshot
+                        .usage_source
+                    ),
+                    prompt_tokens=(
+                        usage_snapshot
+                        .prompt_tokens
+                    ),
+                    completion_tokens=(
+                        usage_snapshot
+                        .completion_tokens
+                    ),
+                    total_tokens=(
+                        usage_snapshot
+                        .total_tokens
+                    ),
+                    latency_ms=latency_ms,
+                    error_type=(
+                        "conversation_not_found"
+                    ),
+                ),
+            )
+        except Exception:
+            pass
+
+        raise HTTPException(
+            status_code=404,
+            detail="Conversation not found",
+        ) from exc
+
+    except Exception as exc:
+        usage_record_error = None
+
+        try:
+            persist_usage_only(
+                session_factory=(
+                    get_session_factory()
+                ),
+                usage=NewUsageRecord(
+                    trace_id=trace_id,
+                    conversation_id=(
+                        conversation_id
+                    ),
+                    request_kind="chat_sync",
+                    provider=active_provider,
+                    model=active_model,
+                    status=(
+                        USAGE_STATUS_PERSISTENCE_FAILED
+                    ),
+                    usage_source=(
+                        usage_snapshot
+                        .usage_source
+                    ),
+                    prompt_tokens=(
+                        usage_snapshot
+                        .prompt_tokens
+                    ),
+                    completion_tokens=(
+                        usage_snapshot
+                        .completion_tokens
+                    ),
+                    total_tokens=(
+                        usage_snapshot
+                        .total_tokens
+                    ),
+                    latency_ms=latency_ms,
+                    error_type=(
+                        type(exc).__name__
+                    ),
+                ),
+            )
+
+        except Exception as usage_exc:
+            usage_record_error = str(
+                usage_exc
+            )
+
+        error_message = (
+            "conversation or usage persistence "
+            f"failed: {exc}"
+        )
+
+        if usage_record_error is not None:
+            error_message += (
+                "; failure accounting also "
+                f"failed: {usage_record_error}"
+            )
+
+        err = build_error(
+            trace_id,
+            active_provider,
+            active_model,
+            latency_ms,
+            error_message,
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail=err,
+        ) from exc
+
     metadata = {
         "provider": active_provider,
         "model": active_model,
@@ -461,6 +715,27 @@ def chat(req: Request, body: Annotated[ChatRequest, Body(openapi_examples=CHAT_O
         "rag": rag_meta,
         "context_chars": context_chars,
         "rag_error": rag_error,
+        "usage": {
+            "request_id": (
+                usage_record.request_id
+            ),
+            "status": (
+                USAGE_STATUS_SUCCEEDED
+            ),
+            "usage_source": (
+                usage_snapshot.usage_source
+            ),
+            "prompt_tokens": (
+                usage_snapshot.prompt_tokens
+            ),
+            "completion_tokens": (
+                usage_snapshot
+                .completion_tokens
+            ),
+            "total_tokens": (
+                usage_snapshot.total_tokens
+            ),
+        },
     }
 
     # 打印日志：便于后端监控
@@ -923,9 +1198,90 @@ async def chat_stream(
                         token,
                     )
 
-            except asyncio.CancelledError:
-                # 客户端断开时不保存部分回复，
-                # 并把取消继续传播给 ASGI server。
+            except (
+                asyncio.CancelledError,
+                GeneratorExit,
+            ):
+                # Provider 未完整结束前客户端断开：
+                # 不保存 Message，只记录本次请求级 accounting。
+                latency_ms = int(
+                    (
+                        time.perf_counter()
+                        - start
+                    )
+                    * 1000
+                )
+
+                partial_content = "".join(
+                    output_parts
+                )
+
+                disconnect_snapshot = (
+                    resolve_terminal_usage_snapshot(
+                        provider_usage=(
+                            provider_usage
+                        ),
+                        messages=(
+                            provider_request.messages
+                        ),
+                        completion_text=(
+                            partial_content
+                        ),
+                    )
+                )
+
+                try:
+                    await asyncio.shield(
+                        run_in_threadpool(
+                            persist_usage_only,
+                            session_factory=(
+                                get_session_factory()
+                            ),
+                            usage=NewUsageRecord(
+                                trace_id=trace_id,
+                                conversation_id=(
+                                    conversation_id
+                                ),
+                                request_kind=(
+                                    "chat_stream"
+                                ),
+                                provider=(
+                                    active_provider
+                                ),
+                                model=active_model,
+                                status=(
+                                    USAGE_STATUS_CLIENT_DISCONNECTED
+                                ),
+                                usage_source=(
+                                    disconnect_snapshot
+                                    .usage_source
+                                ),
+                                prompt_tokens=(
+                                    disconnect_snapshot
+                                    .prompt_tokens
+                                ),
+                                completion_tokens=(
+                                    disconnect_snapshot
+                                    .completion_tokens
+                                ),
+                                total_tokens=(
+                                    disconnect_snapshot
+                                    .total_tokens
+                                ),
+                                latency_ms=(
+                                    latency_ms
+                                ),
+                                error_type=(
+                                    "client_disconnect"
+                                ),
+                            ),
+                        )
+                    )
+
+                except BaseException:
+                    # 不能让 accounting 清理错误覆盖取消语义。
+                    pass
+
                 raise
 
             except Exception as exc:
@@ -936,6 +1292,80 @@ async def chat_stream(
                     )
                     * 1000
                 )
+
+                partial_content = "".join(
+                    output_parts
+                )
+
+                failure_snapshot = (
+                    resolve_terminal_usage_snapshot(
+                        provider_usage=(
+                            provider_usage
+                        ),
+                        messages=(
+                            provider_request.messages
+                        ),
+                        completion_text=(
+                            partial_content
+                        ),
+                    )
+                )
+
+                failure_record = None
+                usage_record_error = None
+
+                try:
+                    failure_record = (
+                        await run_in_threadpool(
+                            persist_usage_only,
+                            session_factory=(
+                                get_session_factory()
+                            ),
+                            usage=NewUsageRecord(
+                                trace_id=trace_id,
+                                conversation_id=(
+                                    conversation_id
+                                ),
+                                request_kind=(
+                                    "chat_stream"
+                                ),
+                                provider=(
+                                    active_provider
+                                ),
+                                model=active_model,
+                                status=(
+                                    USAGE_STATUS_PROVIDER_FAILED
+                                ),
+                                usage_source=(
+                                    failure_snapshot
+                                    .usage_source
+                                ),
+                                prompt_tokens=(
+                                    failure_snapshot
+                                    .prompt_tokens
+                                ),
+                                completion_tokens=(
+                                    failure_snapshot
+                                    .completion_tokens
+                                ),
+                                total_tokens=(
+                                    failure_snapshot
+                                    .total_tokens
+                                ),
+                                latency_ms=(
+                                    latency_ms
+                                ),
+                                error_type=(
+                                    type(exc).__name__
+                                ),
+                            ),
+                        )
+                    )
+
+                except Exception as usage_exc:
+                    usage_record_error = str(
+                        usage_exc
+                    )
 
                 err = build_error(
                     trace_id,
@@ -979,6 +1409,28 @@ async def chat_stream(
                     ],
                     "error": str(exc),
                 }
+                err["usage"] = (
+                    build_usage_payload(
+                        request_id=(
+                            failure_record
+                            .request_id
+                            if failure_record
+                            is not None
+                            else None
+                        ),
+                        status=(
+                            USAGE_STATUS_PROVIDER_FAILED
+                        ),
+                        snapshot=(
+                            failure_snapshot
+                        ),
+                    )
+                )
+
+                if usage_record_error is not None:
+                    err[
+                        "usage_record_error"
+                    ] = usage_record_error
 
                 append_jsonl(
                     settings.RUN_LOG_PATH,
@@ -1028,6 +1480,13 @@ async def chat_stream(
                             context_chars
                         ),
                         "rag_error": rag_error,
+                        "usage_status": (
+                            USAGE_STATUS_PROVIDER_FAILED
+                        ),
+                        "usage_source": (
+                            failure_snapshot
+                            .usage_source
+                        ),
                         "error": str(exc),
                     },
                 )
@@ -1054,132 +1513,12 @@ async def chat_stream(
                     raise
 
                 except Exception:
-                    # 清理失败不能覆盖原始 Provider
-                    # 错误或客户端取消。
+                    # 清理失败不能覆盖 Provider 错误或客户端取消。
                     pass
 
         assistant_content = "".join(
             output_parts
         )
-
-        # Provider 完整结束后才进入持久化。
-        # 持久化成功后才能发送 usage/done。
-        if conversation_id is not None:
-            try:
-                assistant_token_count = (
-                    getattr(
-                        provider_usage,
-                        "completion_tokens",
-                        None,
-                    )
-                    if provider_usage
-                    is not None
-                    else None
-                )
-
-                await run_in_threadpool(
-                    persist_conversation_exchange,
-                    session_factory=(
-                        get_session_factory()
-                    ),
-                    conversation_id=(
-                        conversation_id
-                    ),
-                    request_messages=[
-                        ContextMessage(
-                            role=message.role,
-                            content=message.content,
-                        )
-                        for message
-                        in current_messages
-                    ],
-                    assistant_content=(
-                        assistant_content
-                    ),
-                    provider=active_provider,
-                    model=active_model,
-                    assistant_token_count=(
-                        assistant_token_count
-                    ),
-                )
-
-            except asyncio.CancelledError:
-                raise
-
-            except ConversationNotFoundError as exc:
-                latency_ms = int(
-                    (
-                        time.perf_counter()
-                        - start
-                    )
-                    * 1000
-                )
-
-                err = build_error(
-                    trace_id,
-                    active_provider,
-                    active_model,
-                    latency_ms,
-                    "Conversation not found",
-                )
-
-                err[
-                    "conversation_id"
-                ] = conversation_id
-                err[
-                    "context_window"
-                ] = context_window_payload
-                err["rag"] = {
-                    **rag_dict,
-                    "citations": [],
-                    "error": str(exc),
-                }
-
-                yield sse_event(
-                    "error",
-                    err,
-                )
-
-                return
-
-            except Exception as exc:
-                latency_ms = int(
-                    (
-                        time.perf_counter()
-                        - start
-                    )
-                    * 1000
-                )
-
-                err = build_error(
-                    trace_id,
-                    active_provider,
-                    active_model,
-                    latency_ms,
-                    (
-                        "conversation persistence "
-                        f"failed: {exc}"
-                    ),
-                )
-
-                err[
-                    "conversation_id"
-                ] = conversation_id
-                err[
-                    "context_window"
-                ] = context_window_payload
-                err["rag"] = {
-                    **rag_dict,
-                    "citations": [],
-                    "error": str(exc),
-                }
-
-                yield sse_event(
-                    "error",
-                    err,
-                )
-
-                return
 
         latency_ms = int(
             (
@@ -1188,6 +1527,288 @@ async def chat_stream(
             )
             * 1000
         )
+
+        usage_snapshot = resolve_usage_snapshot(
+            provider_usage=provider_usage,
+            messages=provider_request.messages,
+            completion_text=assistant_content,
+        )
+
+        success_usage = NewUsageRecord(
+            trace_id=trace_id,
+            conversation_id=conversation_id,
+            request_kind="chat_stream",
+            provider=active_provider,
+            model=active_model,
+            status=USAGE_STATUS_SUCCEEDED,
+            usage_source=(
+                usage_snapshot.usage_source
+            ),
+            prompt_tokens=(
+                usage_snapshot.prompt_tokens
+            ),
+            completion_tokens=(
+                usage_snapshot
+                .completion_tokens
+            ),
+            total_tokens=(
+                usage_snapshot.total_tokens
+            ),
+            latency_ms=latency_ms,
+        )
+
+        # Message.token_count 只保存 Provider 原生
+        # completion token，不保存本地估算值。
+        assistant_token_count = (
+            usage_snapshot.completion_tokens
+            if (
+                usage_snapshot.usage_source
+                == USAGE_SOURCE_PROVIDER_NATIVE
+            )
+            else None
+        )
+
+        persistence_task = asyncio.create_task(
+            run_in_threadpool(
+                persist_sync_exchange_and_usage,
+                session_factory=(
+                    get_session_factory()
+                ),
+                conversation_id=(
+                    conversation_id
+                ),
+                request_messages=[
+                    ContextMessage(
+                        role=message.role,
+                        content=message.content,
+                    )
+                    for message
+                    in current_messages
+                ],
+                assistant_content=(
+                    assistant_content
+                ),
+                provider=active_provider,
+                model=active_model,
+                assistant_token_count=(
+                    assistant_token_count
+                ),
+                usage=success_usage,
+            )
+        )
+
+        try:
+            # Provider 已完整结束后，即使客户端此刻断开，
+            # 也等待原子持久化完成，避免提交结果不确定。
+            usage_record = await asyncio.shield(
+                persistence_task
+            )
+
+        except (
+            asyncio.CancelledError,
+            GeneratorExit,
+        ):
+            try:
+                await persistence_task
+            except BaseException:
+                pass
+
+            raise
+
+        except ConversationNotFoundError as exc:
+            failure_record = None
+
+            try:
+                failure_record = (
+                    await run_in_threadpool(
+                        persist_usage_only,
+                        session_factory=(
+                            get_session_factory()
+                        ),
+                        usage=NewUsageRecord(
+                            trace_id=trace_id,
+                            conversation_id=(
+                                conversation_id
+                            ),
+                            request_kind=(
+                                "chat_stream"
+                            ),
+                            provider=(
+                                active_provider
+                            ),
+                            model=active_model,
+                            status=(
+                                USAGE_STATUS_PERSISTENCE_FAILED
+                            ),
+                            usage_source=(
+                                usage_snapshot
+                                .usage_source
+                            ),
+                            prompt_tokens=(
+                                usage_snapshot
+                                .prompt_tokens
+                            ),
+                            completion_tokens=(
+                                usage_snapshot
+                                .completion_tokens
+                            ),
+                            total_tokens=(
+                                usage_snapshot
+                                .total_tokens
+                            ),
+                            latency_ms=(
+                                latency_ms
+                            ),
+                            error_type=(
+                                "conversation_not_found"
+                            ),
+                        ),
+                    )
+                )
+
+            except Exception:
+                pass
+
+            err = build_error(
+                trace_id,
+                active_provider,
+                active_model,
+                latency_ms,
+                "Conversation not found",
+            )
+            err["conversation_id"] = (
+                conversation_id
+            )
+            err["context_window"] = (
+                context_window_payload
+            )
+            err["rag"] = {
+                **rag_dict,
+                "citations": [],
+                "error": str(exc),
+            }
+            err["usage"] = build_usage_payload(
+                request_id=(
+                    failure_record.request_id
+                    if failure_record
+                    is not None
+                    else None
+                ),
+                status=(
+                    USAGE_STATUS_PERSISTENCE_FAILED
+                ),
+                snapshot=usage_snapshot,
+            )
+
+            yield sse_event(
+                "error",
+                err,
+            )
+
+            return
+
+        except Exception as exc:
+            failure_record = None
+            usage_record_error = None
+
+            try:
+                failure_record = (
+                    await run_in_threadpool(
+                        persist_usage_only,
+                        session_factory=(
+                            get_session_factory()
+                        ),
+                        usage=NewUsageRecord(
+                            trace_id=trace_id,
+                            conversation_id=(
+                                conversation_id
+                            ),
+                            request_kind=(
+                                "chat_stream"
+                            ),
+                            provider=(
+                                active_provider
+                            ),
+                            model=active_model,
+                            status=(
+                                USAGE_STATUS_PERSISTENCE_FAILED
+                            ),
+                            usage_source=(
+                                usage_snapshot
+                                .usage_source
+                            ),
+                            prompt_tokens=(
+                                usage_snapshot
+                                .prompt_tokens
+                            ),
+                            completion_tokens=(
+                                usage_snapshot
+                                .completion_tokens
+                            ),
+                            total_tokens=(
+                                usage_snapshot
+                                .total_tokens
+                            ),
+                            latency_ms=(
+                                latency_ms
+                            ),
+                            error_type=(
+                                type(exc).__name__
+                            ),
+                        ),
+                    )
+                )
+
+            except Exception as usage_exc:
+                usage_record_error = str(
+                    usage_exc
+                )
+
+            err = build_error(
+                trace_id,
+                active_provider,
+                active_model,
+                latency_ms,
+                (
+                    "conversation or usage "
+                    f"persistence failed: {exc}"
+                ),
+            )
+            err["conversation_id"] = (
+                conversation_id
+            )
+            err["context_window"] = (
+                context_window_payload
+            )
+            err["rag"] = {
+                **rag_dict,
+                "citations": [],
+                "error": str(exc),
+            }
+            err["usage"] = build_usage_payload(
+                request_id=(
+                    failure_record.request_id
+                    if failure_record
+                    is not None
+                    else None
+                ),
+                status=(
+                    USAGE_STATUS_PERSISTENCE_FAILED
+                ),
+                snapshot=usage_snapshot,
+            )
+
+            if usage_record_error is not None:
+                err[
+                    "usage_record_error"
+                ] = usage_record_error
+
+            yield sse_event(
+                "error",
+                err,
+            )
+
+            return
 
         citations_payload = [
             (
@@ -1210,6 +1831,15 @@ async def chat_stream(
             "model": active_model,
             "latency_ms": latency_ms,
             "token_events": token_events,
+            **build_usage_payload(
+                request_id=(
+                    usage_record.request_id
+                ),
+                status=(
+                    USAGE_STATUS_SUCCEEDED
+                ),
+                snapshot=usage_snapshot,
+            ),
             "prompt_id": (
                 prompt_id
                 or "none"

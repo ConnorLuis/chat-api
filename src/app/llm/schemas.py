@@ -107,6 +107,24 @@ class RagMetadata(BaseModel):
     vector_weight: float = 0.0
     lexical_weight: float = 0.0
 
+class UsageMetadata(BaseModel):
+    request_id: str
+    status: Literal[
+        "succeeded",
+        "provider_failed",
+        "client_disconnected",
+        "persistence_failed",
+    ]
+    usage_source: Literal[
+        "provider_native",
+        "local_estimate",
+        "unavailable",
+    ]
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    total_tokens: int | None = None
+
+
 # 封装响应的元信息（引擎类型、模型名、响应耗时），作为 ChatResponse 的可选字段
 class ChatMetadata(BaseModel):
     provider: str
@@ -118,6 +136,7 @@ class ChatMetadata(BaseModel):
     rag: RagMetadata = Field(default_factory=RagMetadata)
     context_chars: int | None = None
     rag_error: str | None = None
+    usage: UsageMetadata | None = None
 
 # ChatResponse响应模型
 class ChatResponse(BaseModel):

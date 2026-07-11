@@ -268,20 +268,9 @@ def list_messages(
         )
 
 
-def test_stateless_stream_does_not_use_database(
-    monkeypatch,
+def test_stateless_stream_records_usage_only(
+    stream_history_environment,
 ):
-    def fail_session_factory():
-        raise AssertionError(
-            "stateless stream accessed database"
-        )
-
-    monkeypatch.setattr(
-        routes_module,
-        "get_session_factory",
-        fail_session_factory,
-    )
-
     response = TestClient(app).post(
         "/chat/stream",
         json={
@@ -302,10 +291,25 @@ def test_stateless_stream_does_not_use_database(
     )
 
     meta = json.loads(events[0][1])
+    usage = next(
+        json.loads(data)
+        for name, data in events
+        if name == "usage"
+    )
 
     assert meta["conversation_id"] is None
     assert meta["context_window"] is None
-
+    assert usage["status"] == "succeeded"
+    assert usage["request_id"]
+    assert usage["usage_source"] == (
+        "local_estimate"
+    )
+    assert usage["prompt_tokens"] > 0
+    assert usage["completion_tokens"] > 0
+    assert usage["total_tokens"] == (
+        usage["prompt_tokens"]
+        + usage["completion_tokens"]
+    )
 
 def test_stream_loads_history_and_persists_before_done(
     stream_history_environment,
@@ -352,7 +356,7 @@ def test_stream_loads_history_and_persists_before_done(
 
     original_persist = (
         routes_module
-        .persist_conversation_exchange
+        .persist_sync_exchange_and_usage
     )
     original_sse_event = (
         routes_module.sse_event
@@ -386,7 +390,7 @@ def test_stream_loads_history_and_persists_before_done(
 
     monkeypatch.setattr(
         routes_module,
-        "persist_conversation_exchange",
+        "persist_sync_exchange_and_usage",
         tracked_persist,
     )
     monkeypatch.setattr(

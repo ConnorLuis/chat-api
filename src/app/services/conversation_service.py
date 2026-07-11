@@ -287,6 +287,7 @@ class ConversationService:
         conversation_id: str,
         *,
         messages: Sequence[NewMessage],
+        commit: bool = True,
     ) -> list[Message]:
         """在一个事务中原子追加多条消息."""
 
@@ -331,10 +332,14 @@ class ConversationService:
 
             conversation.updated_at = utc_now()
 
-            self.session.commit()
+            if commit:
+                self.session.commit()
 
-            for message in created:
-                self.session.refresh(message)
+                for message in created:
+                    self.session.refresh(message)
+
+            else:
+                self.session.flush()
 
             return created
 

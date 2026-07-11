@@ -4,9 +4,15 @@ from collections.abc import AsyncIterator
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import func, select
 
 from src.app.api import routes_chat as routes_module
 from src.app.db.base import Base
+from src.app.db.models import (
+    Conversation,
+    Message,
+    UsageRecord,
+)
 from src.app.db.session import (
     build_engine,
     build_session_factory,
@@ -137,19 +143,10 @@ def list_messages(
         )
 
 
-def test_stateless_chat_does_not_use_database(
-    monkeypatch,
+def test_stateless_chat_does_not_persist_conversation_messages(
+    history_environment,
 ):
-    def fail_session_factory():
-        raise AssertionError(
-            "stateless chat accessed database"
-        )
-
-    monkeypatch.setattr(
-        routes_module,
-        "get_session_factory",
-        fail_session_factory,
-    )
+    session_factory = history_environment
 
     response = TestClient(app).post(
         "/chat",
@@ -165,10 +162,35 @@ def test_stateless_chat_does_not_use_database(
     )
 
     assert response.status_code == 200
-    assert response.json()[
-        "conversation_id"
-    ] is None
+    data = response.json()
 
+    assert data["conversation_id"] is None
+    assert data["metadata"]["usage"][
+        "usage_source"
+    ] == "local_estimate"
+
+    with session_factory() as session:
+        conversation_count = session.scalar(
+            select(
+                func.count(Conversation.id)
+            )
+        )
+        message_count = session.scalar(
+            select(
+                func.count(Message.id)
+            )
+        )
+        usage_count = session.scalar(
+            select(
+                func.count(
+                    UsageRecord.request_id
+                )
+            )
+        )
+
+    assert conversation_count == 0
+    assert message_count == 0
+    assert usage_count == 1
 
 def test_sync_chat_loads_history_and_persists_exchange(
     history_environment,
