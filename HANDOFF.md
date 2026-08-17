@@ -1,6 +1,6 @@
-# HANDOFF — chat-api v2-plus（Chat-Day10 completed / Chat-Day9B closure）
+# HANDOFF — chat-api v2-plus（Chat-Day10 completed / Chat-Day9B completed）
 
-> 新对话开场可直接粘贴：`chat-api 当前以 v2-langchain-rag-plus 为目标分支，定位为 production-oriented、单租户的 LLM Chat Gateway。Chat-Day1～Day10 已完成统一 Provider、OpenAI-compatible 同步/流式、Conversation/Message 持久化、上下文窗口、usage/cost、API Key 鉴权、请求限流和每日 token quota；Day9B 已完成依赖、CI、配置、运行产物和文档收口。本地 Python 3.10 严格验收为 256 passed、0 skipped、0 warnings。下一步只做 Provider timeout/retry/fallback、压测、Docker 与发布文档，不向 chat-api 增加 Agentic RAG、GraphRAG、Multi-Agent 或 MCP。`
+> 新对话开场可直接粘贴：`chat-api 当前以 v2-langchain-rag-plus 为目标分支，定位为 production-oriented、单租户的 LLM Chat Gateway。Chat-Day1～Day10 已完成统一 Provider、OpenAI-compatible 同步/流式、Conversation/Message 持久化、上下文窗口、usage/cost、API Key 鉴权、请求限流和每日 token quota；Day9B 已完成依赖、CI、配置、运行产物和文档收口。本地与 GitHub Actions 远端严格验收均为 256 passed、0 skipped、0 warnings。下一步只做 Provider timeout/retry/fallback、压测、Docker 与发布文档，不向 chat-api 增加 Agentic RAG、GraphRAG、Multi-Agent 或 MCP。`
 
 ## 1. 当前事实
 
@@ -8,8 +8,7 @@
 |---|---|
 | 仓库 | `ConnorLuis/chat-api` |
 | 目标分支 | `v2-langchain-rag-plus` |
-| Day9B 收口分支 | `chat-day9b-cleanup` |
-| Day9B 代码基线 | `e8e0ab3 feat(day10): account OpenAI-compatible streaming usage` |
+| Day9B 收口提交 | `09a2222 chore(day9b): close repository and CI hygiene` |
 | Python | 3.10.19 |
 | 应用框架 | FastAPI + SQLAlchemy 2.x |
 | 默认数据库 | `sqlite:///./data/chat_api.db` |
@@ -17,8 +16,9 @@
 | 默认 embedding | `mock`，维度 512 |
 | 默认 RAG backend | `native` |
 | 当前完整测试 | `256 passed, 0 skipped, 0 warnings` |
+| Day9B 远端验收 | `v2-langchain-rag-plus` GitHub Actions：passed |
 
-Day9B 本地严格验收已经通过。远端 GitHub Actions 必须在推送后，以最新 workflow run 的结果作为最终远端验收。
+Day9B 已通过本地严格验收和 `v2-langchain-rag-plus` 目标分支 GitHub Actions 远端验收。
 
 ## 2. 项目定位与边界
 
@@ -272,7 +272,7 @@ warnings -> 0
 git diff --check -> passed
 ```
 
-推送后还必须确认最新 GitHub Actions run 通过，才可将“远端 CI”标记为完成。
+目标分支远端验收结果：GitHub Actions passed，pytest 256 passed，warnings-as-errors 编译通过。
 
 ## 8. Git 提交边界
 
@@ -346,6 +346,7 @@ bab036c feat(day7): add token usage accounting
 c21ef6b feat(day10): enforce native chat token quota
 cf21b13 feat(day10): account OpenAI-compatible sync usage
 e8e0ab3 feat(day10): account OpenAI-compatible streaming usage
+09a2222 chore(day9b): close repository and CI hygiene
 ```
 
-Day9B cleanup commit 尚未在本文档生成时确定最终 hash。
+Day9B cleanup implementation commit：`09a2222 chore(day9b): close repository and CI hygiene`。

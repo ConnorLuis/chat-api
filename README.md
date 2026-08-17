@@ -1,11 +1,10 @@
 # chat-api
 
 <!-- LLM_GATEWAY_PLUS_START -->
-## v2-plus 当前状态（Chat-Day10 completed / Chat-Day9B closure）
+## v2-plus 当前状态（Chat-Day10 completed / Chat-Day9B completed）
 
 - 目标分支：`v2-langchain-rag-plus`
-- Day9B 收口分支：`chat-day9b-cleanup`
-- 当前代码基线：`e8e0ab3 feat(day10): account OpenAI-compatible streaming usage`
+- Day9B 收口提交：`09a2222 chore(day9b): close repository and CI hygiene`
 - 项目定位：production-oriented、单租户的 LLM Chat Gateway
 
 ### 已完成能力
@@ -40,7 +39,7 @@ warnings -> 0
 git diff --check -> passed
 ```
 
-当前 Day9B 补丁需在推送后以最新 GitHub Actions run 完成远端验收。
+Chat-Day9B 已通过本地严格验收和 `v2-langchain-rag-plus` 目标分支 GitHub Actions 远端验收。
 
 ### 项目边界
 
