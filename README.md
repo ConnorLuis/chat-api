@@ -1,7 +1,7 @@
 # chat-api
 
 <!-- LLM_GATEWAY_PLUS_START -->
-## v2-plus 当前状态（Chat-Day11 completed / Chat-Day12 local acceptance passed）
+## v2-plus 当前状态（Chat-Day12 completed / mock baseline recorded）
 
 - 目标分支：`v2-langchain-rag-plus`
 - Day9B 收口提交：`09a2222 chore(day9b): close repository and CI hygiene`
@@ -15,7 +15,7 @@
 - Chat-Day9：API Key 一次性明文创建、HMAC-SHA256 + server pepper、active/revoked、Bearer / `X-API-Key`、CallerIdentity 和路由保护
 - Chat-Day10：用户/IP 请求限流、可信代理开关、caller-aware 每日 token quota，以及原生和 OpenAI-compatible 同步/流式 usage 结算
 - Chat-Day11：统一 Provider 错误分类、显式 timeout、指数退避 retry、可选 fallback、流式首 token 边界，以及原生/OpenAI-compatible 可观测字段
-- Chat-Day12（待实测收口）：可复现并发压测器、固定场景矩阵、逐请求原始样本，以及吞吐量、P50/P95/P99、错误率和流式 TTFT 自动报告
+- Chat-Day12：可复现并发压测器、固定场景矩阵、逐请求原始样本和自动报告；已完成三次 clean-commit mock baseline，并记录吞吐量、P50/P95/P99、错误率和流式 TTFT
 
 ### Chat-Day9B 收口
 
@@ -29,29 +29,29 @@
 - 取消 Git 对 Chroma、KB 文档和 SQLite 运行产物的跟踪
 - 提供完整 `.env.example`，并整理 `.gitignore`
 
-### 最近已收口严格验收（Day11）
+### 当前严格验收（Day12）
 
 ```text
 Python 3.10.19
 pip check -> No broken requirements found
-python -W error -m compileall -q src tests -> passed
-pytest -q -> 286 passed in 18.44s
+python -W error -m compileall -q src scripts tests -> passed
+pytest -q -> 303 passed in 18.38s
 skipped -> 0
 warnings -> 0
 git diff --check -> passed
 ```
 
-Chat-Day9B 已通过本地与目标分支远端验收。Chat-Day11 提交 `39ad9d4` 已通过本地严格验收和 GitHub Actions run `32028750201`。Day12 工具代码已通过目标 Python 3.10 环境全量回归，仍须用三次本机实际压测报告和目标分支 CI 完成收口。
+Chat-Day9B 与 Chat-Day11 已通过本地和目标分支远端验收。Day12 实现提交 `a23c92e feat(day12): add reproducible load testing` 已通过本地严格验收和 GitHub Actions run `32032592555`；三次报告均来自该 clean commit、Python 3.10.19、单 worker、隔离 SQLite 和 MockProvider。
 
-Day12 本地验收：Python 3.10.19，warnings-as-errors compile passed，`303 passed in 18.38s`，`git diff --check` passed。交付前还以真实应用执行了 8 场景、1320 个测量请求的端到端工具验证，并确认能够识别 SQLite 并发写锁失败。最终验收仍以三次本机报告和目标分支 CI 为准。
+三次共执行 3,960 个测量请求，整体错误率为 49/3,960（1.237%）。除 `native-sync-c50` 外，其余七个场景三次均为 0 错误；C50 三次错误率为 0%、5.0%、4.8%，合计 49/1,500（3.267%）。49 个失败全部为持久化阶段 SQLAlchemy 连接池耗尽导致的 HTTP 500，明确暴露了单 worker + 当前 SQLite/QueuePool 配置的高并发边界，而非模型推理失败。
 
 ### 项目边界
 
-`agent-api` 负责 Agentic RAG、GraphRAG、Multi-Agent 和 MCP。`chat-api` 不继续增加 Agent 编排能力，后续只完成 Day12 实测报告、Docker 和最终发布文档。
+`agent-api` 负责 Agentic RAG、GraphRAG、Multi-Agent 和 MCP。`chat-api` 不继续增加 Agent 编排能力，后续只完成 Docker、一键启动和最终发布文档。
 
 ### 下一步
 
-运行 `benchmarks/configs/mock_baseline.json` 三次，保留实际 `report.md`，复核吞吐量、P50/P95、错误率和流式 TTFT；如本机 Ollama 可用，再补一组注明硬件和模型的端到端结果。
+Chat-Day13：补齐 Dockerfile、Compose、健康检查、持久化卷和 Ollama 连接说明，完成一键启动及最终发布/面试文档。真实 Ollama 基准属于可选加分项，必须注明硬件、模型 tag 和量化精度，不阻塞 chat-api 收口。
 <!-- LLM_GATEWAY_PLUS_END -->
 
 
@@ -373,6 +373,27 @@ python scripts/run_load_test.py \
 - `<scenario>.json`：逐请求 latency、TTFT、状态码和错误分类原始样本。
 
 完整启动命令、指标定义、复现规则和 Ollama 示例见 [`benchmarks/README.md`](benchmarks/README.md)。生成结果已被 Git 忽略；只有经过复核、注明环境的聚合数字才应摘录进项目文档。
+
+### Mock baseline（2026-08-17，三次）
+
+固定环境：commit `a23c92e`（`git_dirty=false`）、Python 3.10.19、WSL2 Linux x86_64、32 logical CPUs、Uvicorn 单 worker、独立 SQLite、MockProvider、应用/server 日志级别 `WARNING`、access log 关闭、认证/限流/token quota 关闭。每次运行相同的 8 场景矩阵和 1,320 个测量请求，warm-up 不计入指标。
+
+下表中 RPS 为三次算术平均值 `[最小值–最大值]`；P50/P95 为三次中位数 `[最小值–最大值]`；TTFT 列为 P50/P95 的三次中位数；错误率按三次请求合并计算。
+
+| Scenario | C | 三次请求数 | RPS | P50 ms | P95 ms | TTFT P50/P95 ms | 合并错误率 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `native-sync-c1` | 1 | 300 | 179.527 `[164.901–187.788]` | 4.991 `[4.953–5.296]` | 6.689 `[6.063–7.341]` | — | 0/300（0%） |
+| `native-sync-c10` | 10 | 900 | 221.261 `[218.388–226.150]` | 8.691 `[8.457–8.806]` | 149.267 `[136.578–236.035]` | — | 0/900（0%） |
+| `native-sync-c50` | 50 | 1,500 | 201.467 `[193.566–207.942]` | 169.073 `[163.384–170.793]` | 563.727 `[483.784–597.023]` | — | 49/1,500（3.267%） |
+| `native-stream-c1` | 1 | 60 | 2.507 `[2.474–2.524]` | 399.897 `[395.558–406.454]` | 413.824 `[413.430–420.495]` | 6.252/8.222 | 0/60（0%） |
+| `native-stream-c10` | 10 | 150 | 25.249 `[25.043–25.538]` | 369.962 `[365.391–385.857]` | 433.856 `[423.584–476.070]` | 2.261/15.402 | 0/150（0%） |
+| `native-stream-c25` | 25 | 300 | 57.855 `[57.441–58.371]` | 382.950 `[369.589–393.190]` | 517.925 `[491.583–527.503]` | 2.367/45.854 | 0/300（0%） |
+| `openai-sync-c10` | 10 | 600 | 189.509 `[147.730–232.280]` | 9.271 `[9.161–9.306]` | 138.119 `[112.817–187.851]` | — | 0/600（0%） |
+| `openai-stream-c10` | 10 | 150 | 23.945 `[23.705–24.260]` | 413.931 `[407.903–418.080]` | 432.492 `[417.963–441.859]` | 13.803/22.360 | 0/150（0%） |
+
+结论：native sync 从 C1 到 C10 吞吐量提升，但 C50 吞吐量回落、P50 从约 8.7ms 跃升到约 169ms、P95 升至约 564ms，并在后两次运行出现 5.0%/4.8% 错误。因此本环境的过载拐点位于 C10 与 C50 之间；当前矩阵不足以声称更精确的最大安全并发。49 个失败均为 `QueuePool limit of size 5 overflow 10 reached` 引起的持久化 HTTP 500，说明瓶颈位于数据库连接池/持久化路径。生产扩展方向是 PostgreSQL、显式连接池调优和分层容量测试，而不是增加模型 retry 来掩盖数据库错误。
+
+流式场景三次均无错误；其总延迟主要来自 MockProvider 为模拟增量输出而设置的确定性逐 token 延迟，因此只能作为 Gateway/SSE/persistence 基线，不能代表真实 LLM 的 token generation latency。RPS 统计所有已完成的测量请求（包括失败请求）；逐次 P99、状态分布、失败 trace 和原始样本保留在本地 `benchmarks/results/mock-baseline-a23c92e-run{1,2,3}/`，不提交运行产物。
 
 ---
 

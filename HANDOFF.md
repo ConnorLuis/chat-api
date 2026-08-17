@@ -1,6 +1,6 @@
-# HANDOFF — chat-api v2-plus（Chat-Day11 completed / Chat-Day12 local acceptance passed）
+# HANDOFF — chat-api v2-plus（Chat-Day12 completed / mock baseline recorded）
 
-> 新对话开场可直接粘贴：`chat-api 当前以 v2-langchain-rag-plus 为目标分支，定位为 production-oriented、单租户的 LLM Chat Gateway。Chat-Day1～Day11 已完成统一 Provider、OpenAI-compatible 同步/流式、Conversation/Message 持久化、上下文窗口、usage/cost、API Key 鉴权、请求限流、每日 token quota，以及 timeout/retry/fallback 与执行链可观测性；Day11 提交 39ad9d4 的本地 Python 3.10 严格验收为 286 passed、0 skipped、0 warnings，GitHub Actions run 32028750201 passed。Day12 的可复现压测器、固定场景配置和自动 JSON/Markdown 报告已经实现，Python 3.10 本地验收为 303 passed、0 skipped、0 warnings。下一步是在本机执行三次 mock suite、复核实际吞吐量/P50/P95/错误率/TTFT，再做 Docker 与发布文档。不要向 chat-api 增加 Agentic RAG、GraphRAG、Multi-Agent 或 MCP。`
+> 新对话开场可直接粘贴：`chat-api 当前以 v2-langchain-rag-plus 为目标分支，定位为 production-oriented、单租户的 LLM Chat Gateway。Chat-Day1～Day12 已完成统一 Provider、OpenAI-compatible 同步/流式、Conversation/Message 持久化、上下文窗口、usage/cost、API Key 鉴权、请求限流、每日 token quota、Provider timeout/retry/fallback 与可观测性，以及可复现并发压测。Day12 实现提交 a23c92e 的 Python 3.10 严格验收为 303 passed、0 skipped、0 warnings，GitHub Actions run 32032592555 passed；三次 clean-commit mock baseline 共 3,960 个测量请求，除 native-sync-c50 的连接池耗尽外其余场景均为 0 错误。下一步只做 Docker、一键启动和最终发布文档。不要向 chat-api 增加 Agentic RAG、GraphRAG、Multi-Agent 或 MCP。`
 
 ## 1. 当前事实
 
@@ -21,9 +21,12 @@
 | Day11 收口提交 | `39ad9d4 feat(day11): add provider resilience and observability` |
 | Day11 远端验收 | GitHub Actions run `32028750201`：passed |
 | Day12 Python 3.10 本地验收 | `303 passed in 18.38s`，compile/diff check passed |
-| Day12 当前状态 | 工具与本地回归 passed；三次实际报告和 CI pending |
+| Day12 实现提交 | `a23c92e feat(day12): add reproducible load testing` |
+| Day12 远端验收 | GitHub Actions run `32032592555`：passed |
+| Day12 实测 | clean commit 上连续 3 次、8 场景、共 3,960 个测量请求 |
+| Day12 当前状态 | completed；mock baseline 已复核并记录 |
 
-Day9B 与 Day11 均已通过本地和目标分支远端验收。Day12 不能用生成或推测数字收口，必须以本机实际报告为准。
+Day9B、Day11 与 Day12 均已通过各自本地严格验收和目标分支 GitHub Actions。Day12 文档中的性能数字来自上传的三次原始报告，不是生成值或单次最好结果。
 
 ## 2. 项目定位与边界
 
@@ -38,7 +41,7 @@ Day9B 与 Day11 均已通过本地和目标分支远端验收。Day12 不能用�
 
 `agent-api` 负责 Agentic RAG、GraphRAG、Multi-Agent、LangGraph 编排和 MCP。不要在 `chat-api` 重复实现这些能力。
 
-当前不再扩展 Prompt cache、多租户 RBAC、复杂 Agent Graph 等新范围。Provider resilience 已完成，剩余工作只围绕 Day12 实测报告、Docker 和最终发布质量。
+当前不再扩展 Prompt cache、多租户 RBAC、复杂 Agent Graph 等新范围。Provider resilience 和压测已完成，剩余工作只围绕 Docker、一键启动和最终发布质量。
 
 ## 3. 已完成能力
 
@@ -98,7 +101,7 @@ Day9B 与 Day11 均已通过本地和目标分支远端验收。Day12 不能用�
 - 成功 usage/cost 归属于最终 Provider/Model，失败尝试保留在 resilience observability 中；
 - 没有为了本阶段先拆大路由，避免把行为重构与 resilience 语义混在同一次改动中。
 
-### Chat-Day12：可复现并发压测（工具 ready，实测 pending）
+### Chat-Day12：可复现并发压测（completed）
 
 - `scripts/load_test.py`：异步 worker 并发、warm-up、原生/OpenAI-compatible 同步与流式协议校验；
 - `scripts/run_load_test.py`：配置驱动 CLI，自动完成 preflight、逐场景运行和结果落盘；
@@ -109,6 +112,11 @@ Day9B 与 Day11 均已通过本地和目标分支远端验收。Day12 不能用�
 - API Key 只从环境读取，结果只记录是否配置，绝不写入明文；
 - `APP_LOG_LEVEL=WARNING` 可关闭应用逐请求 INFO 日志，避免终端输出污染正式基准；
 - `benchmarks/results/` 是被 Git 忽略的运行产物。
+- 实现提交 `a23c92e` 已通过 GitHub Actions run `32032592555`；
+- 在该 clean commit 上连续完成三次 mock suite，共 3,960 个测量请求，整体错误率 49/3,960（1.237%）；
+- 除 `native-sync-c50` 外七个场景三次均为 0 错误；C50 合计 49/1,500（3.267%）失败；
+- 49 个失败全部是持久化阶段 SQLAlchemy QueuePool 耗尽导致的 HTTP 500，未混入 Provider/协议类错误；
+- 三次聚合表和性能边界解释已写入 README 的 `Mock baseline` 小节。
 
 ### v2 RAG 能力
 
@@ -329,7 +337,7 @@ warnings -> 0
 git diff --check -> passed
 ```
 
-Day12 工具代码当前本地结果：
+Day12 本地与远端结果：
 
 ```text
 Python 3.10.19
@@ -338,9 +346,24 @@ pytest -> 303 passed in 18.38s
 skipped -> 0
 warnings -> 0
 git diff --check -> passed
+implementation commit -> a23c92e
+GitHub Actions run 32032592555 -> passed
 ```
 
-Day9B 目标分支远端验收已通过。Day11 提交 `39ad9d4` 对应的 GitHub Actions run `32028750201` 已通过。Day12 的 Python 3.10 本地全量结果为 303 passed；实际性能数字和目标分支 CI 尚待完成。
+Day12 三次 mock baseline 均记录 `git_dirty=false`、commit `a23c92e`、Python 3.10.19、单 worker、隔离 SQLite、MockProvider 和关闭 limiter/quota。每次 1,320 个测量请求，合计 3,960 个；三次结果均保留，未挑选最好的一次。
+
+| Scenario | C | 三次请求数 | RPS 均值 `[范围]` | P50/P95 ms（三次中位数） | TTFT P50/P95 ms | 合并错误率 |
+|---|---:|---:|---:|---:|---:|---:|
+| `native-sync-c1` | 1 | 300 | 179.527 `[164.901–187.788]` | 4.991 / 6.689 | — | 0% |
+| `native-sync-c10` | 10 | 900 | 221.261 `[218.388–226.150]` | 8.691 / 149.267 | — | 0% |
+| `native-sync-c50` | 50 | 1,500 | 201.467 `[193.566–207.942]` | 169.073 / 563.727 | — | 49/1,500（3.267%） |
+| `native-stream-c1` | 1 | 60 | 2.507 `[2.474–2.524]` | 399.897 / 413.824 | 6.252 / 8.222 | 0% |
+| `native-stream-c10` | 10 | 150 | 25.249 `[25.043–25.538]` | 369.962 / 433.856 | 2.261 / 15.402 | 0% |
+| `native-stream-c25` | 25 | 300 | 57.855 `[57.441–58.371]` | 382.950 / 517.925 | 2.367 / 45.854 | 0% |
+| `openai-sync-c10` | 10 | 600 | 189.509 `[147.730–232.280]` | 9.271 / 138.119 | — | 0% |
+| `openai-stream-c10` | 10 | 150 | 23.945 `[23.705–24.260]` | 413.931 / 432.492 | 13.803 / 22.360 | 0% |
+
+关键解释：native sync 的吞吐量在 C10 达到本矩阵高点，C50 时吞吐回落且 tail latency/错误率显著恶化，因此过载拐点只能定位在 C10–C50，不能声称精确最大并发。C50 三次错误率分别为 0%、5.0%、4.8%；失败均为 `QueuePool limit of size 5 overflow 10 reached`，说明当前瓶颈是数据库连接池/持久化路径。流式 mock 的总延迟包含确定性的逐 token sleep，不代表真实模型推理速度。
 
 ## 8. Git 提交边界
 
@@ -373,23 +396,20 @@ git status --short
 
 ## 9. 已知未完成项
 
-Provider resilience 已完成，当前剩余项：
+Provider resilience 与 Day12 压测已完成，当前剩余项：
 
-1. 用已实现的 Day12 工具完成三次 mock 实测，复核吞吐量、P50/P95、错误率、TTFT 和测试环境记录；
-2. Dockerfile、docker-compose 和最终一键启动；
-3. 最终发布 README、演示命令与面试数据整理。
+1. Dockerfile、docker-compose 和最终一键启动；
+2. 最终发布 README、演示命令与面试数据整理。
 
 Alembic/PostgreSQL、多实例分布式 limiter/quota 和完整 metrics/tracing backend 属于未来演进边界，不作为本轮 chat-api 简历项目收口的必做项。大路由拆分也不是 Day11 遗留缺陷；只有后续改动确实受阻时，才允许做保持行为不变的独立重构。
 
 ## 10. 下一步顺序
 
-### Chat-Day12：并发压测
+### Chat-Day12：并发压测（completed）
 
-- 在无 `--reload`、单 worker、独立 SQLite、limiter/quota 关闭的服务上运行 `mock_baseline.json`；
-- 相同 suite 连续运行 3 次，复核场景 JSON 和 `report.md`；
-- README/HANDOFF 摘录实际请求数、并发度、req/s、P50/P95、错误率和流式 TTFT；
-- Ollama 可用时补一组注明 CPU/GPU、显存、模型 tag/精度的真实 Provider 结果；
-- Day12 代码已完成全量 Python 3.10 回归；三次实际报告与目标分支 CI 完成后才能标记 completed。
+- 实现、Python 3.10 全量回归、目标分支 CI 和三次 clean-commit mock baseline 均已完成；
+- README/HANDOFF 已记录实际请求数、并发度、RPS、P50/P95、错误率、TTFT 和连接池瓶颈；
+- Ollama 真实模型基准是可选加分项，只有注明 CPU/GPU、显存、模型 tag 和量化精度后才可引用，不阻塞收口。
 
 ### Chat-Day13：Docker 与发布收口
 
@@ -414,8 +434,9 @@ e8e0ab3 feat(day10): account OpenAI-compatible streaming usage
 09a2222 chore(day9b): close repository and CI hygiene
 5b09bd8 docs(day9b): record final remote acceptance
 39ad9d4 feat(day11): add provider resilience and observability
+a23c92e feat(day12): add reproducible load testing
 ```
 
 Day9B cleanup implementation commit：`09a2222 chore(day9b): close repository and CI hygiene`。
 
-Day12 工具提交建议标题：`feat(day12): add reproducible load testing`。实际报告确认后再以单独 docs 提交记录结果，避免把未经运行的性能数字写进实现提交。
+Day12 三次报告已复核。当前 README/HANDOFF 结果记录建议使用独立提交标题：`docs(day12): record mock load-test baseline`。
