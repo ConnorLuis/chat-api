@@ -15,6 +15,8 @@ from src.app.llm.providers import (
     ProviderChatChunk,
     ProviderChatRequest,
     ProviderUsage,
+    provider_execution_payload,
+    provider_execution_target,
 )
 from src.app.services import (
     USAGE_STATUS_CLIENT_DISCONNECTED,
@@ -33,6 +35,7 @@ from .schemas import (
     OpenAICompletionUsage,
     OpenAIErrorDetail,
     OpenAIErrorResponse,
+    OpenAIGatewayMetadata,
 )
 from .usage_accounting import (
     OPENAI_STREAM_REQUEST_KIND,
@@ -179,6 +182,7 @@ def _finish_chunk(
     created: int,
     model: str,
     finish_reason: str,
+    provider_execution: dict | None = None,
 ) -> str:
     return _serialize_chunk(
         OpenAIChatCompletionChunk(
@@ -197,6 +201,15 @@ def _finish_chunk(
                     logprobs=None,
                 )
             ],
+            gateway=(
+                OpenAIGatewayMetadata(
+                    provider_execution=(
+                        provider_execution
+                    )
+                )
+                if provider_execution is not None
+                else None
+            ),
         )
     )
 
@@ -224,15 +237,30 @@ def _error_event(
     message: str,
     error_type: str = "api_error",
     code: str = "provider_error",
+    provider_execution: dict | None = None,
 ) -> str:
-    payload = OpenAIErrorResponse(
+    response = OpenAIErrorResponse(
         error=OpenAIErrorDetail(
             message=message,
             type=error_type,
             param=None,
             code=code,
-        )
-    ).model_dump()
+        ),
+        gateway=(
+            OpenAIGatewayMetadata(
+                provider_execution=(
+                    provider_execution
+                )
+            )
+            if provider_execution is not None
+            else None
+        ),
+    )
+
+    payload = response.model_dump()
+
+    if response.gateway is None:
+        payload.pop("gateway", None)
 
     return _sse_data(payload)
 
@@ -273,6 +301,7 @@ async def _stream_events(
     )
 
     latest_usage: ProviderUsage | None = None
+    execution_payload = None
     completion_parts: list[str] = []
     finish_reason: str | None = None
 
@@ -315,6 +344,19 @@ async def _stream_events(
                 first_chunk.model
                 or active_model
             )
+            if first_chunk.execution is not None:
+                execution_payload = (
+                    provider_execution_payload(
+                        first_chunk.execution
+                    )
+                )
+                active_provider, active_model = (
+                    provider_execution_target(
+                        first_chunk.execution,
+                        provider=active_provider,
+                        model=active_model,
+                    )
+                )
 
         yield _role_chunk(
             completion_id=completion_id,
@@ -343,6 +385,20 @@ async def _stream_events(
                 chunk.model
                 or active_model
             )
+
+            if chunk.execution is not None:
+                execution_payload = (
+                    provider_execution_payload(
+                        chunk.execution
+                    )
+                )
+                active_provider, active_model = (
+                    provider_execution_target(
+                        chunk.execution,
+                        provider=active_provider,
+                        model=active_model,
+                    )
+                )
 
             if chunk.delta != "":
                 completion_parts.append(
@@ -420,6 +476,9 @@ async def _stream_events(
                 code=(
                     "usage_persistence_error"
                 ),
+                provider_execution=(
+                    execution_payload
+                ),
             )
             return
 
@@ -432,6 +491,9 @@ async def _stream_events(
             finish_reason=(
                 finish_reason
                 or "stop"
+            ),
+            provider_execution=(
+                execution_payload
             ),
         )
 
@@ -455,6 +517,22 @@ async def _stream_events(
         yield _sse_data("[DONE]")
 
     except ChatProviderError as exc:
+        execution = exc.execution
+
+        if execution is not None:
+            active_provider, active_model = (
+                provider_execution_target(
+                    execution,
+                    provider=active_provider,
+                    model=active_model,
+                )
+            )
+            execution_payload = (
+                provider_execution_payload(
+                    execution
+                )
+            )
+
         completion_text = "".join(
             completion_parts
         )
@@ -516,6 +594,9 @@ async def _stream_events(
 
         yield _error_event(
             message=message,
+            provider_execution=(
+                execution_payload
+            ),
         )
 
     except (

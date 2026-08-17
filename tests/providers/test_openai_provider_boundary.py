@@ -58,3 +58,16 @@ def test_openai_provider_requires_model():
         match="OpenAI model is required",
     ):
         provider.chat(build_request(model=None))
+
+
+def test_openai_provider_disables_sdk_internal_retries():
+    provider = OpenAIProvider(
+        api_key="test-key",
+        model="test-model",
+        timeout_s=30,
+    )
+
+    kwargs = provider._client_kwargs()
+
+    assert kwargs["timeout"] == 30.0
+    assert kwargs["max_retries"] == 0

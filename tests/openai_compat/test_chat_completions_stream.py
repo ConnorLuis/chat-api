@@ -204,6 +204,14 @@ def test_mock_stream_returns_openai_chunks(
         "delta"
     ] == {}
 
+    execution = finish_chunks[0][
+        "gateway"
+    ]["provider_execution"]
+    assert execution["primary_provider"] == "mock"
+    assert execution["final_provider"] == "mock"
+    assert execution["total_attempts"] == 1
+    assert execution["fallback_used"] is False
+
     assert not any(
         "usage" in chunk
         for chunk in chunks

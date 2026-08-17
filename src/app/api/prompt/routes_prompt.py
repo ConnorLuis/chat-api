@@ -11,6 +11,8 @@ from src.app.llm.run_logger import append_jsonl
 from src.app.llm.providers import (
     build_provider_request,
     get_chat_provider,
+    provider_execution_payload,
+    provider_execution_target,
 )
 from src.app.llm.schemas import PromptCompareResponse, PromptCompareRequest, PromptCompareItem, PromptRef, PromptCompareMetrics
 
@@ -40,6 +42,7 @@ def prompt_compare(body: PromptCompareRequest = Body(...)):
 
         active_provider = provider.name
         active_model = provider_model(provider, body.model)
+        execution_payload = None
 
         provider_request = build_provider_request(
             messages,
@@ -61,9 +64,40 @@ def prompt_compare(body: PromptCompareRequest = Body(...)):
                 provider_response.model
                 or active_model
             )
+            execution_payload = (
+                provider_execution_payload(
+                    provider_response.execution
+                )
+            )
         except Exception as e:
+            execution = getattr(
+                e,
+                "execution",
+                None,
+            )
+            active_provider, active_model = (
+                provider_execution_target(
+                    execution,
+                    provider=active_provider,
+                    model=active_model,
+                )
+            )
+            execution_payload = (
+                provider_execution_payload(
+                    execution
+                )
+            )
             latency_ms = int((time.perf_counter() - start) * 1000)
-            err = build_error(trace_id, active_provider, active_model, latency_ms, f"{active_provider} failed: {str(e)}")
+            err = build_error(
+                trace_id,
+                active_provider,
+                active_model,
+                latency_ms,
+                f"{active_provider} failed: {str(e)}",
+                provider_execution=(
+                    execution_payload
+                ),
+            )
             record = {
                 "compare_group_id": compare_group_id,
                 "variant": variant,
@@ -79,7 +113,10 @@ def prompt_compare(body: PromptCompareRequest = Body(...)):
                 "temperature":body.temperature,
                 "top_p":body.top_p,
                 "max_tokens":body.max_tokens,
-                "error": str(e)
+                "error": str(e),
+                "provider_execution": (
+                    execution_payload
+                ),
             }
             append_jsonl(settings.RUN_LOG_PATH, record)
             raise HTTPException(status_code=502, detail=err)
@@ -89,7 +126,8 @@ def prompt_compare(body: PromptCompareRequest = Body(...)):
             "model": active_model,
             "latency_ms": latency_ms,
             "prompt_id": prompt_id,
-            "prompt_version": prompt_version if prompt_id else "none"
+            "prompt_version": prompt_version if prompt_id else "none",
+            "provider_execution": execution_payload,
         }
         # 打印日志：便于后端监控
         record = {
@@ -107,6 +145,7 @@ def prompt_compare(body: PromptCompareRequest = Body(...)):
             "temperature": body.temperature,
             "top_p": body.top_p,
             "max_tokens": body.max_tokens,
+            "provider_execution": execution_payload,
         }
         append_jsonl(settings.RUN_LOG_PATH, record)
         return PromptCompareItem(trace_id=trace_id, answer=answer, metadata=metadata)

@@ -44,3 +44,59 @@ def test_invalid_auth_boolean_is_rejected(monkeypatch):
 
     with pytest.raises(ValueError, match="API_AUTH_ENABLED"):
         _ = Settings().API_AUTH_ENABLED
+
+
+def test_provider_resilience_defaults(monkeypatch):
+    keys = (
+        "PROVIDER_RETRY_MAX_ATTEMPTS",
+        "PROVIDER_RETRY_BASE_DELAY_MS",
+        "PROVIDER_RETRY_MAX_DELAY_MS",
+        "PROVIDER_FALLBACK_ENABLED",
+        "PROVIDER_FALLBACK_PROVIDER",
+        "PROVIDER_FALLBACK_MODEL",
+    )
+
+    for key in keys:
+        monkeypatch.delenv(key, raising=False)
+
+    settings = Settings()
+
+    assert settings.PROVIDER_RETRY_MAX_ATTEMPTS == 2
+    assert settings.PROVIDER_RETRY_BASE_DELAY_MS == 100
+    assert settings.PROVIDER_RETRY_MAX_DELAY_MS == 1000
+    assert settings.PROVIDER_FALLBACK_ENABLED is False
+    assert settings.PROVIDER_FALLBACK_PROVIDER == ""
+    assert settings.PROVIDER_FALLBACK_MODEL == ""
+
+
+def test_provider_resilience_environment_overrides(monkeypatch):
+    monkeypatch.setenv(
+        "PROVIDER_RETRY_MAX_ATTEMPTS",
+        "3",
+    )
+    monkeypatch.setenv(
+        "PROVIDER_FALLBACK_ENABLED",
+        "true",
+    )
+    monkeypatch.setenv(
+        "PROVIDER_FALLBACK_PROVIDER",
+        " OPENAI ",
+    )
+    monkeypatch.setenv(
+        "PROVIDER_FALLBACK_MODEL",
+        " fallback-model ",
+    )
+
+    settings = Settings()
+
+    assert settings.PROVIDER_RETRY_MAX_ATTEMPTS == 3
+    assert settings.PROVIDER_FALLBACK_ENABLED is True
+    assert settings.PROVIDER_FALLBACK_PROVIDER == "openai"
+    assert settings.PROVIDER_FALLBACK_MODEL == "fallback-model"
+
+
+def test_non_positive_provider_timeout_is_rejected(monkeypatch):
+    monkeypatch.setenv("OLLAMA_TIMEOUT_S", "0")
+
+    with pytest.raises(ValueError, match="OLLAMA_TIMEOUT_S"):
+        _ = Settings().OLLAMA_TIMEOUT_S

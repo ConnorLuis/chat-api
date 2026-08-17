@@ -147,6 +147,32 @@ class UsageMetadata(BaseModel):
     cost: CostMetadata | None = None
 
 
+class ProviderAttemptTrace(BaseModel):
+    ordinal: int
+    provider: str
+    model: str
+    outcome: Literal[
+        "succeeded",
+        "failed",
+        "stream_started",
+        "stream_interrupted",
+    ]
+    latency_ms: int
+    error_code: str | None = None
+    retryable: bool | None = None
+
+
+class ProviderExecutionTrace(BaseModel):
+    primary_provider: str
+    final_provider: str
+    total_attempts: int
+    retries: int
+    fallback_used: bool
+    attempts: List[
+        ProviderAttemptTrace
+    ] = Field(default_factory=list)
+
+
 # 封装响应的元信息（引擎类型、模型名、响应耗时），作为 ChatResponse 的可选字段
 class ChatMetadata(BaseModel):
     provider: str
@@ -159,6 +185,9 @@ class ChatMetadata(BaseModel):
     context_chars: int | None = None
     rag_error: str | None = None
     usage: UsageMetadata | None = None
+    provider_execution: (
+        ProviderExecutionTrace | None
+    ) = None
 
 # ChatResponse响应模型
 class ChatResponse(BaseModel):
@@ -209,6 +238,9 @@ class ErrorDetail(BaseModel):
     model: str
     latency_ms: int
     error: str
+    provider_execution: (
+        ProviderExecutionTrace | None
+    ) = None
 
 # 外层包装，符合 FastAPI 错误响应的默认格式（detail 字段）
 class ErrorResponse(BaseModel):
@@ -296,6 +328,9 @@ class RunRecord(BaseModel):
     temperature: Optional[float] = None
     top_p: Optional[float] = None
     max_tokens: Optional[int] = None
+    provider_execution: (
+        ProviderExecutionTrace | None
+    ) = None
 
 # 运行踪迹响应体
 class RunsTraceResponse(BaseModel):

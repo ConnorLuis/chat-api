@@ -10,6 +10,10 @@ from pydantic import (
     model_validator,
 )
 
+from src.app.llm.schemas import (
+    ProviderExecutionTrace,
+)
+
 
 OpenAIMessageRole = Literal[
     "developer",
@@ -137,6 +141,12 @@ class OpenAIChatCompletionChoice(BaseModel):
     logprobs: None = None
 
 
+class OpenAIGatewayMetadata(BaseModel):
+    """Optional chat-api extension; standard OpenAI fields stay intact."""
+
+    provider_execution: ProviderExecutionTrace
+
+
 class OpenAIChatCompletionResponse(BaseModel):
     id: str
     object: Literal["chat.completion"] = "chat.completion"
@@ -144,6 +154,7 @@ class OpenAIChatCompletionResponse(BaseModel):
     model: str
     choices: list[OpenAIChatCompletionChoice]
     usage: OpenAICompletionUsage | None = None
+    gateway: OpenAIGatewayMetadata | None = None
 
 
 class OpenAIChatCompletionDelta(BaseModel):
@@ -169,6 +180,7 @@ class OpenAIChatCompletionChunk(BaseModel):
     model: str
     choices: list[OpenAIChatCompletionChunkChoice]
     usage: OpenAICompletionUsage | None = None
+    gateway: OpenAIGatewayMetadata | None = None
 
 
 class OpenAIErrorDetail(BaseModel):
@@ -180,3 +192,4 @@ class OpenAIErrorDetail(BaseModel):
 
 class OpenAIErrorResponse(BaseModel):
     error: OpenAIErrorDetail
+    gateway: OpenAIGatewayMetadata | None = None

@@ -104,6 +104,15 @@ def test_non_stream_mock_returns_openai_shape(
     # MockProvider 没有真实 token usage，不伪造零值。
     assert "usage" not in data
 
+    execution = data["gateway"][
+        "provider_execution"
+    ]
+    assert execution["primary_provider"] == "mock"
+    assert execution["final_provider"] == "mock"
+    assert execution["total_attempts"] == 1
+    assert execution["retries"] == 0
+    assert execution["fallback_used"] is False
+
 
 def test_provider_override_and_usage_mapping(
     client,
@@ -293,3 +302,13 @@ def test_openai_provider_missing_key_returns_502(
     assert error["type"] == "api_error"
     assert error["code"] == "provider_error"
     assert "OPENAI_API_KEY" in error["message"]
+
+    execution = response.json()["gateway"][
+        "provider_execution"
+    ]
+    assert execution["primary_provider"] == "openai"
+    assert execution["final_provider"] == "openai"
+    assert execution["total_attempts"] == 1
+    assert execution["attempts"][0][
+        "error_code"
+    ] == "provider_configuration_error"

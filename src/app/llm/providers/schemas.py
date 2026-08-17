@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,6 +40,59 @@ class ProviderUsage:
 
 
 @dataclass(frozen=True, slots=True)
+class ProviderAttempt:
+    """一次实际下游 Provider 调用的可观测快照。"""
+
+    ordinal: int
+    provider: str
+    model: str
+    outcome: Literal[
+        "succeeded",
+        "failed",
+        "stream_started",
+        "stream_interrupted",
+    ]
+    latency_ms: int
+    error_code: str | None = None
+    retryable: bool | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "ordinal": self.ordinal,
+            "provider": self.provider,
+            "model": self.model,
+            "outcome": self.outcome,
+            "latency_ms": self.latency_ms,
+            "error_code": self.error_code,
+            "retryable": self.retryable,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderExecutionMetadata:
+    """一次网关请求的 retry/fallback 执行摘要。"""
+
+    primary_provider: str
+    final_provider: str
+    attempts: tuple[ProviderAttempt, ...]
+    retries: int
+    fallback_used: bool
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "primary_provider": self.primary_provider,
+            "final_provider": self.final_provider,
+            "total_attempts": len(self.attempts),
+            "retries": self.retries,
+            "fallback_used": self.fallback_used,
+            "attempts": [
+                attempt.as_dict()
+                for attempt in self.attempts
+            ],
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class ProviderChatResponse:
     """非流式 Provider 统一响应。"""
 
@@ -48,6 +101,7 @@ class ProviderChatResponse:
     model: str
     usage: ProviderUsage | None = None
     finish_reason: str | None = None
+    execution: ProviderExecutionMetadata | None = None
     raw_response: Any = field(
         default=None,
         repr=False,
@@ -64,6 +118,7 @@ class ProviderChatChunk:
     model: str
     usage: ProviderUsage | None = None
     finish_reason: str | None = None
+    execution: ProviderExecutionMetadata | None = None
     raw_chunk: Any = field(
         default=None,
         repr=False,

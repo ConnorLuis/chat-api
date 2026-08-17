@@ -1,6 +1,6 @@
-# HANDOFF — chat-api v2-plus（Chat-Day10 completed / Chat-Day9B completed）
+# HANDOFF — chat-api v2-plus（Chat-Day11 completed）
 
-> 新对话开场可直接粘贴：`chat-api 当前以 v2-langchain-rag-plus 为目标分支，定位为 production-oriented、单租户的 LLM Chat Gateway。Chat-Day1～Day10 已完成统一 Provider、OpenAI-compatible 同步/流式、Conversation/Message 持久化、上下文窗口、usage/cost、API Key 鉴权、请求限流和每日 token quota；Day9B 已完成依赖、CI、配置、运行产物和文档收口。本地与 GitHub Actions 远端严格验收均为 256 passed、0 skipped、0 warnings。下一步只做 Provider timeout/retry/fallback、压测、Docker 与发布文档，不向 chat-api 增加 Agentic RAG、GraphRAG、Multi-Agent 或 MCP。`
+> 新对话开场可直接粘贴：`chat-api 当前以 v2-langchain-rag-plus 为目标分支，定位为 production-oriented、单租户的 LLM Chat Gateway。Chat-Day1～Day11 已完成统一 Provider、OpenAI-compatible 同步/流式、Conversation/Message 持久化、上下文窗口、usage/cost、API Key 鉴权、请求限流、每日 token quota，以及 timeout/retry/fallback 与执行链可观测性；Day9B 已完成依赖、CI、配置、运行产物和文档收口。Day11 本地 Python 3.10 严格验收为 286 passed、0 skipped、0 warnings，目标分支远端验收以 Day11 提交对应的 GitHub Actions passed 为准。下一步只做并发压测、Docker 与发布文档，不向 chat-api 增加 Agentic RAG、GraphRAG、Multi-Agent 或 MCP。`
 
 ## 1. 当前事实
 
@@ -15,10 +15,12 @@
 | 默认 Provider | request 决定；测试使用 `mock` |
 | 默认 embedding | `mock`，维度 512 |
 | 默认 RAG backend | `native` |
-| 当前完整测试 | `256 passed, 0 skipped, 0 warnings` |
+| 当前完整测试 | `286 passed, 0 skipped, 0 warnings` |
 | Day9B 远端验收 | `v2-langchain-rag-plus` GitHub Actions：passed |
+| Day11 本地验收 | Python 3.10：passed |
+| Day11 远端验收 | Day11 提交对应的 GitHub Actions 必须 passed |
 
-Day9B 已通过本地严格验收和 `v2-langchain-rag-plus` 目标分支 GitHub Actions 远端验收。
+Day9B 已通过本地与目标分支远端验收。Day11 已通过本地严格验收；目标分支远端结果以本次提交对应的最新 GitHub Actions run 为准。
 
 ## 2. 项目定位与边界
 
@@ -33,7 +35,7 @@ Day9B 已通过本地严格验收和 `v2-langchain-rag-plus` 目标分支 GitHub
 
 `agent-api` 负责 Agentic RAG、GraphRAG、Multi-Agent、LangGraph 编排和 MCP。不要在 `chat-api` 重复实现这些能力。
 
-当前不再扩展 Prompt cache、多租户 RBAC、复杂 Agent Graph 等新范围。剩余工作只围绕 Provider resilience、压测、Docker 和最终发布质量。
+当前不再扩展 Prompt cache、多租户 RBAC、复杂 Agent Graph 等新范围。Provider resilience 已完成，剩余工作只围绕压测、Docker 和最终发布质量。
 
 ## 3. 已完成能力
 
@@ -80,6 +82,19 @@ Day9B 已通过本地严格验收和 `v2-langchain-rag-plus` 目标分支 GitHub
 - OpenAI-compatible 同步和流式 usage accounting；
 - rate limit 与 token quota 可独立开关，默认均关闭，保持旧接口兼容。
 
+### Chat-Day11：Provider resilience
+
+- 统一错误分类：timeout、connection、rate limit、unavailable、request、dependency、configuration、stream interrupted；
+- timeout/connection/HTTP 408/429/5xx 可重试，其余配置、依赖、其他 4xx 和未知错误默认不重试；
+- `max_attempts` 包含首次调用，默认 2 次，指数退避默认从 100ms 开始并限制在 1000ms；
+- OpenAI SDK 内置 retry 固定为 0，由网关提供唯一重试语义；
+- fallback 默认关闭，只在 primary 可重试错误耗尽后触发；
+- fallback 使用显式 fallback model 或自身默认模型，不继承 primary request model；
+- 流式仅允许在首个非空 token 前 retry/fallback，输出开始后的错误统一为 stream interrupted；
+- `/chat`、Prompt Compare、原生 SSE 与 OpenAI-compatible 同步/流式均暴露执行链；
+- 成功 usage/cost 归属于最终 Provider/Model，失败尝试保留在 resilience observability 中；
+- 没有为了本阶段先拆大路由，避免把行为重构与 resilience 语义混在同一次改动中。
+
 ### v2 RAG 能力
 
 - `RAG_BACKEND=native|langchain` 抽象；
@@ -101,10 +116,10 @@ Day9B 已通过本地严格验收和 `v2-langchain-rag-plus` 目标分支 GitHub
 ```text
 HTTP route / business preparation
   -> ProviderFactory
-  -> ChatProvider
-     -> MockProvider
-     -> OllamaProvider
-     -> OpenAIProvider
+  -> ResilientChatProvider
+     -> primary ChatProvider
+     -> optional fallback ChatProvider
+        -> MockProvider / OllamaProvider / OpenAIProvider
 ```
 
 无调用方的旧 `src/app/llm/engines/` 已删除。不要重新引入双层 Engine/Provider 兼容层。
@@ -120,10 +135,30 @@ meta -> token* -> usage -> done
 Provider 失败：
 
 ```text
-meta -> error
+meta -> token* -> error
 ```
 
 SSE 响应头已经发送后，业务失败仍是 HTTP 200，通过 `event:error` 表达；失败流不再发送 `usage` 或 `done`。
+
+### Retry / fallback
+
+- 可重试：timeout、connection、HTTP 408/429/5xx；
+- 不可重试：dependency/configuration、其他 HTTP 4xx、未知 invocation error；
+- fallback 只发生在 primary 可重试错误耗尽后，默认关闭；
+- 首个非空 token 是流式不可回退边界；输出开始后不 retry、不 fallback；
+- `PROVIDER_FALLBACK_MODEL` 与 primary 请求模型解耦；
+- `ProviderExecutionMetadata` 记录 primary/final Provider、总尝试数、retry 次数、fallback 状态和每次尝试结果。
+
+公开字段：
+
+```text
+/chat、/prompt/compare -> metadata.provider_execution
+/chat/stream -> usage/error.provider_execution
+OpenAI sync -> gateway.provider_execution
+OpenAI stream -> finish chunk 或 error event 的 gateway.provider_execution
+```
+
+成功时 accounting 使用最终 Provider/Model；fallback 之前的失败尝试不会生成额外 UsageRecord 或重复计费。
 
 ### Persistence
 
@@ -177,6 +212,12 @@ set -a && source .env && set +a
 
 ```dotenv
 OLLAMA_BASE_URL=http://127.0.0.1:11434
+PROVIDER_RETRY_MAX_ATTEMPTS=2
+PROVIDER_RETRY_BASE_DELAY_MS=100
+PROVIDER_RETRY_MAX_DELAY_MS=1000
+PROVIDER_FALLBACK_ENABLED=false
+PROVIDER_FALLBACK_PROVIDER=
+PROVIDER_FALLBACK_MODEL=
 DATABASE_URL=sqlite:///./data/chat_api.db
 API_AUTH_ENABLED=false
 REQUEST_RATE_LIMIT_ENABLED=false
@@ -239,9 +280,9 @@ export OLLAMA_BASE_URL="http://$WIN_IP:11434"
 创建独立环境：
 
 ```bash
-python -m venv .venv-day9b
-.venv-day9b/bin/python -m pip install --upgrade pip
-.venv-day9b/bin/python -m pip install \
+python -m venv .venv-day11
+.venv-day11/bin/python -m pip install --upgrade pip
+.venv-day11/bin/python -m pip install \
   -r requirements-dev.txt \
   -r requirements-langchain.txt \
   -r requirements-openai.txt
@@ -250,13 +291,13 @@ python -m venv .venv-day9b
 严格验收：
 
 ```bash
-.venv-day9b/bin/python -m pip check
-.venv-day9b/bin/python -W error -m compileall -q src scripts
+.venv-day11/bin/python -m pip check
+.venv-day11/bin/python -W error -m compileall -q src tests
 EMBEDDING_PROVIDER=mock \
 API_AUTH_ENABLED=false \
 REQUEST_RATE_LIMIT_ENABLED=false \
 TOKEN_QUOTA_ENABLED=false \
-.venv-day9b/bin/python -m pytest -q
+.venv-day11/bin/python -m pytest -q
 git diff --check
 ```
 
@@ -265,14 +306,14 @@ git diff --check
 ```text
 Python 3.10.19
 pip check -> No broken requirements found
-compileall warnings-as-errors -> passed
-pytest -> 256 passed in 17.59s
+compileall src/tests warnings-as-errors -> passed
+pytest -> 286 passed in 18.44s
 skipped -> 0
 warnings -> 0
 git diff --check -> passed
 ```
 
-目标分支远端验收结果：GitHub Actions passed，pytest 256 passed，warnings-as-errors 编译通过。
+Day9B 目标分支远端验收已通过。Day11 目标分支远端验收需在本次提交推送后，以对应 GitHub Actions run 为最终结果。
 
 ## 8. Git 提交边界
 
@@ -305,33 +346,30 @@ git status --short
 
 ## 9. 已知未完成项
 
-以下内容不属于 Day9B，不应混入本次 cleanup commit：
+Provider resilience 已完成，当前剩余项：
 
-1. Provider timeout、retry、fallback 的正式错误语义；
-2. 超大 route 的无行为变化拆分；
-3. Alembic / PostgreSQL 正式迁移；
-4. 多 worker / 多实例 limiter 和 quota 的分布式存储；
-5. 并发压测，以及吞吐量、P50/P95、错误率记录；
-6. Dockerfile、docker-compose 和最终一键启动；
-7. 更完整的 metrics / tracing backend。
+1. 并发压测，以及吞吐量、P50/P95、错误率和测试环境记录；
+2. Dockerfile、docker-compose 和最终一键启动；
+3. 最终发布 README、演示命令与面试数据整理。
+
+Alembic/PostgreSQL、多实例分布式 limiter/quota 和完整 metrics/tracing backend 属于未来演进边界，不作为本轮 chat-api 简历项目收口的必做项。大路由拆分也不是 Day11 遗留缺陷；只有后续改动确实受阻时，才允许做保持行为不变的独立重构。
 
 ## 10. 下一步顺序
 
-### Chat-Day11A：受控拆分（仅在必要时）
+### Chat-Day12：并发压测
 
-- 提取历史、RAG、prompt/request preparation；
-- 提取统一 Provider execution 边界；
-- 保持响应字段、错误 envelope、SSE 顺序、accounting 和持久化语义不变。
+- 固定 Python、硬件、Provider、模型和请求 payload；
+- 至少覆盖 Mock 基准与一个真实 Provider 场景；
+- 分档记录并发数、请求总数、吞吐量、P50/P95、错误率；
+- 区分同步与流式首 token/完整响应延迟；
+- 输出可复现命令和结果文件，不把本机偶然结果写成通用性能承诺。
 
-### Chat-Day11B：Provider resilience
+### Chat-Day13：Docker 与发布收口
 
-- 明确 connect/read/overall timeout；
-- 只对可重试的瞬时错误重试；
-- 定义 retry 次数、backoff、trace 和 observability；
-- 明确 fallback 触发条件、模型选择、usage/cost 归属；
-- 流式首 token 前后采用不同失败语义。
-
-之后再做压测、Docker 和最终发布 README。不要在同一个提交中同时做 route 重构与 retry/fallback。
+- Dockerfile、docker-compose 和健康检查；
+- 一键启动、环境变量、持久化卷与 Ollama 连接说明；
+- 最终 README、演示脚本和面试讲解口径；
+- 完整本地验收与目标分支 GitHub Actions。
 
 ## 11. 关键提交
 
@@ -347,6 +385,9 @@ c21ef6b feat(day10): enforce native chat token quota
 cf21b13 feat(day10): account OpenAI-compatible sync usage
 e8e0ab3 feat(day10): account OpenAI-compatible streaming usage
 09a2222 chore(day9b): close repository and CI hygiene
+5b09bd8 docs(day9b): record final remote acceptance
 ```
 
 Day9B cleanup implementation commit：`09a2222 chore(day9b): close repository and CI hygiene`。
+
+Day11 代码、测试和本文档应合并为一个提交，建议标题：`feat(day11): add provider resilience and observability`。推送后再记录该提交对应的 GitHub Actions run，不需要为 hash 反复修改同一提交。

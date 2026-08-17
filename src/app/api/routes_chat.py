@@ -29,6 +29,8 @@ from src.app.llm.schemas import ChatRequest, ChatResponse, ErrorResponse, RagMet
 from src.app.llm.providers import (
     build_provider_request,
     get_chat_provider,
+    provider_execution_payload,
+    provider_execution_target,
 )
 from src.app.usage import (
     USAGE_SOURCE_PROVIDER_NATIVE,
@@ -469,6 +471,7 @@ def chat(req: Request, body: Annotated[ChatRequest, Body(openapi_examples=CHAT_O
         top_p=body.top_p,
         max_tokens=body.max_tokens,
     )
+    execution_payload = None
 
     try:
         provider_response = provider.chat(
@@ -476,6 +479,23 @@ def chat(req: Request, body: Annotated[ChatRequest, Body(openapi_examples=CHAT_O
         )
 
     except Exception as e:
+        execution = getattr(
+            e,
+            "execution",
+            None,
+        )
+        active_provider, active_model = (
+            provider_execution_target(
+                execution,
+                provider=active_provider,
+                model=active_model,
+            )
+        )
+        execution_payload = (
+            provider_execution_payload(
+                execution
+            )
+        )
         latency_ms = int(
             (
                 time.perf_counter()
@@ -534,6 +554,9 @@ def chat(req: Request, body: Annotated[ChatRequest, Body(openapi_examples=CHAT_O
                 f"{active_provider} failed: "
                 f"{str(e)}"
             ),
+            provider_execution=(
+                execution_payload
+            ),
         )
 
         record = {
@@ -566,6 +589,9 @@ def chat(req: Request, body: Annotated[ChatRequest, Body(openapi_examples=CHAT_O
             "rag_error": rag_error,
             "context_chars": context_chars,
             "error": str(e),
+            "provider_execution": (
+                execution_payload
+            ),
         }
 
         if usage_record_error is not None:
@@ -592,6 +618,11 @@ def chat(req: Request, body: Annotated[ChatRequest, Body(openapi_examples=CHAT_O
     active_model = (
         provider_response.model
         or active_model
+    )
+    execution_payload = (
+        provider_execution_payload(
+            provider_response.execution
+        )
     )
 
     latency_ms = int(
@@ -815,6 +846,7 @@ def chat(req: Request, body: Annotated[ChatRequest, Body(openapi_examples=CHAT_O
                 usage_result.usage_cost
             ),
         ),
+        "provider_execution": execution_payload,
     }
 
     # 打印日志：便于后端监控
@@ -835,6 +867,7 @@ def chat(req: Request, body: Annotated[ChatRequest, Body(openapi_examples=CHAT_O
         "rag_hits": rag_meta.hits if rag_meta else 0,
         "rag_error": rag_error,
         "context_chars": context_chars,
+        "provider_execution": execution_payload,
     }
     append_jsonl(settings.RUN_LOG_PATH, record)
     # 返回符合ChatResponse模型的响应
@@ -1239,6 +1272,7 @@ async def chat_stream(
         output_chars = 0
         token_events = 0
         provider_usage = None
+        execution_payload = None
 
         stream_iterator = (
             provider
@@ -1257,6 +1291,20 @@ async def chat_stream(
                     if chunk.model:
                         active_model = (
                             chunk.model
+                        )
+
+                    if chunk.execution is not None:
+                        execution_payload = (
+                            provider_execution_payload(
+                                chunk.execution
+                            )
+                        )
+                        active_provider, active_model = (
+                            provider_execution_target(
+                                chunk.execution,
+                                provider=active_provider,
+                                model=active_model,
+                            )
                         )
 
                     if chunk.usage is not None:
@@ -1368,6 +1416,26 @@ async def chat_stream(
                 raise
 
             except Exception as exc:
+                execution = getattr(
+                    exc,
+                    "execution",
+                    None,
+                )
+
+                if execution is not None:
+                    active_provider, active_model = (
+                        provider_execution_target(
+                            execution,
+                            provider=active_provider,
+                            model=active_model,
+                        )
+                    )
+                    execution_payload = (
+                        provider_execution_payload(
+                            execution
+                        )
+                    )
+
                 latency_ms = int(
                     (
                         time.perf_counter()
@@ -1517,6 +1585,11 @@ async def chat_stream(
                     )
                 )
 
+                if execution_payload is not None:
+                    err[
+                        "provider_execution"
+                    ] = execution_payload
+
                 if usage_record_error is not None:
                     err[
                         "usage_record_error"
@@ -1578,6 +1651,9 @@ async def chat_stream(
                             .usage_source
                         ),
                         "error": str(exc),
+                        "provider_execution": (
+                            execution_payload
+                        ),
                     },
                 )
 
@@ -1972,6 +2048,7 @@ async def chat_stream(
                     )
                 ),
             },
+            "provider_execution": execution_payload,
         }
 
         yield sse_event(
@@ -2023,6 +2100,9 @@ async def chat_stream(
                 "rag_error": rag_error,
                 "citations_count": (
                     len(citations)
+                ),
+                "provider_execution": (
+                    execution_payload
                 ),
             },
         )

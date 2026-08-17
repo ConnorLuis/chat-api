@@ -12,7 +12,19 @@ client = TestClient(app)
 """
 def test_chat_error_contract_ok(monkeypatch):
 
+    for key in (
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
     monkeypatch.setenv("OLLAMA_BASE_URL", "http://127.0.0.1:1")
+    monkeypatch.setenv("PROVIDER_RETRY_MAX_ATTEMPTS", "1")
+    monkeypatch.setenv("PROVIDER_FALLBACK_ENABLED", "false")
     payload = {
         "provider": "ollama",
         "messages": [{"role": "user", "content": "hi"}],
@@ -27,3 +39,12 @@ def test_chat_error_contract_ok(monkeypatch):
     assert "model" in data
     assert "latency_ms" in data
     assert "error" in data
+    execution = data["provider_execution"]
+    assert execution["primary_provider"] == "ollama"
+    assert execution["final_provider"] == "ollama"
+    assert execution["total_attempts"] == 1
+    assert execution["fallback_used"] is False
+    assert execution["attempts"][0]["outcome"] == "failed"
+    assert execution["attempts"][0]["error_code"] == (
+        "provider_connection_error"
+    )

@@ -26,6 +26,8 @@ from src.app.llm.providers import (
     UnsupportedProviderError,
     build_provider_request,
     get_chat_provider,
+    provider_execution_payload,
+    provider_execution_target,
 )
 
 from .errors import openai_error_response
@@ -45,6 +47,7 @@ from .schemas import (
     OpenAIChatCompletionResponse,
     OpenAICompletionUsage,
     OpenAIErrorResponse,
+    OpenAIGatewayMetadata,
 )
 
 
@@ -99,6 +102,12 @@ def _build_response(
     *,
     requested_model: str,
 ) -> OpenAIChatCompletionResponse:
+    execution_payload = (
+        provider_execution_payload(
+            provider_response.execution
+        )
+    )
+
     return OpenAIChatCompletionResponse(
         id=_completion_id(),
         created=int(time.time()),
@@ -120,6 +129,15 @@ def _build_response(
             )
         ],
         usage=_map_usage(provider_response.usage),
+        gateway=(
+            OpenAIGatewayMetadata(
+                provider_execution=(
+                    execution_payload
+                )
+            )
+            if execution_payload is not None
+            else None
+        ),
     )
 
 
@@ -262,6 +280,19 @@ def create_chat_completion(
         )
 
     except ChatProviderError as exc:
+        execution = exc.execution
+        failed_provider, failed_model = (
+            provider_execution_target(
+                execution,
+                provider=provider.name,
+                model=resolved_model,
+            )
+        )
+        execution_payload = (
+            provider_execution_payload(
+                execution
+            )
+        )
         latency_ms = int(
             (
                 time.perf_counter()
@@ -280,8 +311,8 @@ def create_chat_completion(
                 request_kind=(
                     OPENAI_SYNC_REQUEST_KIND
                 ),
-                provider=provider.name,
-                model=resolved_model,
+                provider=failed_provider,
+                model=failed_model,
                 status=(
                     USAGE_STATUS_PROVIDER_FAILED
                 ),
@@ -304,6 +335,9 @@ def create_chat_completion(
             message=str(exc),
             error_type="api_error",
             code="provider_error",
+            provider_execution=(
+                execution_payload
+            ),
         )
 
     except Exception as exc:

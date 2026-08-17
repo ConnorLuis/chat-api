@@ -1,3 +1,4 @@
+import math
 import os
 
 # 健壮的环境变量读取
@@ -65,6 +66,29 @@ def getenv_int(
     return value
 
 
+def getenv_float(
+    key: str,
+    default: float,
+    *,
+    minimum: float = 0.0,
+) -> float:
+    raw = getenv(key, str(default)).strip()
+
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise ValueError(
+            f"{key} must be a number"
+        ) from exc
+
+    if not math.isfinite(value) or value < minimum:
+        raise ValueError(
+            f"{key} must be a finite number greater than "
+            f"or equal to {minimum}"
+        )
+
+    return value
+
 """封装所有配置项
 
 """
@@ -82,7 +106,11 @@ class Settings:
     # Ollama API 调用的超时时间（秒）	60	先读取字符串，再转 float 类型
     @property
     def OLLAMA_TIMEOUT_S(self) -> float:
-        return float(getenv("OLLAMA_TIMEOUT_S", "60"))
+        return getenv_float(
+            "OLLAMA_TIMEOUT_S",
+            60.0,
+            minimum=0.001,
+        )
 
     # OpenAI / OpenAI-compatible Provider 配置
     @property
@@ -99,7 +127,11 @@ class Settings:
 
     @property
     def OPENAI_TIMEOUT_S(self) -> float:
-        return float(getenv("OPENAI_TIMEOUT_S", "60"))
+        return getenv_float(
+            "OPENAI_TIMEOUT_S",
+            60.0,
+            minimum=0.001,
+        )
 
     @property
     def OPENAI_COMPAT_DEFAULT_PROVIDER(self) -> str:
@@ -108,6 +140,54 @@ class Settings:
             "OPENAI_COMPAT_DEFAULT_PROVIDER",
             "mock",
         ).strip().lower()
+
+
+    # Provider resilience
+    @property
+    def PROVIDER_RETRY_MAX_ATTEMPTS(self) -> int:
+        """包含第一次调用在内的最大尝试次数。"""
+        return getenv_int(
+            "PROVIDER_RETRY_MAX_ATTEMPTS",
+            2,
+            minimum=1,
+        )
+
+    @property
+    def PROVIDER_RETRY_BASE_DELAY_MS(self) -> int:
+        return getenv_int(
+            "PROVIDER_RETRY_BASE_DELAY_MS",
+            100,
+            minimum=0,
+        )
+
+    @property
+    def PROVIDER_RETRY_MAX_DELAY_MS(self) -> int:
+        return getenv_int(
+            "PROVIDER_RETRY_MAX_DELAY_MS",
+            1000,
+            minimum=0,
+        )
+
+    @property
+    def PROVIDER_FALLBACK_ENABLED(self) -> bool:
+        return getenv_bool(
+            "PROVIDER_FALLBACK_ENABLED",
+            False,
+        )
+
+    @property
+    def PROVIDER_FALLBACK_PROVIDER(self) -> str:
+        return getenv(
+            "PROVIDER_FALLBACK_PROVIDER",
+            "",
+        ).strip().lower()
+
+    @property
+    def PROVIDER_FALLBACK_MODEL(self) -> str:
+        return getenv(
+            "PROVIDER_FALLBACK_MODEL",
+            "",
+        ).strip()
 
     # Conversation / Message 关系数据库
     @property

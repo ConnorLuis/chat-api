@@ -1,7 +1,7 @@
 # chat-api
 
 <!-- LLM_GATEWAY_PLUS_START -->
-## v2-plus 当前状态（Chat-Day10 completed / Chat-Day9B completed）
+## v2-plus 当前状态（Chat-Day11 completed）
 
 - 目标分支：`v2-langchain-rag-plus`
 - Day9B 收口提交：`09a2222 chore(day9b): close repository and CI hygiene`
@@ -14,6 +14,7 @@
 - Chat-Day8：版本化价格目录、Decimal 成本估算、UsageCost 快照和 usage reporting API
 - Chat-Day9：API Key 一次性明文创建、HMAC-SHA256 + server pepper、active/revoked、Bearer / `X-API-Key`、CallerIdentity 和路由保护
 - Chat-Day10：用户/IP 请求限流、可信代理开关、caller-aware 每日 token quota，以及原生和 OpenAI-compatible 同步/流式 usage 结算
+- Chat-Day11：统一 Provider 错误分类、显式 timeout、指数退避 retry、可选 fallback、流式首 token 边界，以及原生/OpenAI-compatible 可观测字段
 
 ### Chat-Day9B 收口
 
@@ -32,22 +33,22 @@
 ```text
 Python 3.10.19
 pip check -> No broken requirements found
-python -W error -m compileall -q src scripts -> passed
-pytest -q -> 256 passed
+python -W error -m compileall -q src tests -> passed
+pytest -q -> 286 passed in 18.44s
 skipped -> 0
 warnings -> 0
 git diff --check -> passed
 ```
 
-Chat-Day9B 已通过本地严格验收和 `v2-langchain-rag-plus` 目标分支 GitHub Actions 远端验收。
+Chat-Day9B 已通过本地与目标分支远端验收。Chat-Day11 已通过本地严格验收；目标分支远端验收以本次 Day11 提交对应的 GitHub Actions passed 为准。
 
 ### 项目边界
 
-`agent-api` 负责 Agentic RAG、GraphRAG、Multi-Agent 和 MCP。`chat-api` 不继续增加 Agent 编排能力，后续只完成 Provider timeout/retry/fallback、并发压测、Docker 和最终发布文档。
+`agent-api` 负责 Agentic RAG、GraphRAG、Multi-Agent 和 MCP。`chat-api` 不继续增加 Agent 编排能力，后续只完成并发压测、Docker 和最终发布文档。
 
 ### 下一步
 
-Chat-Day11：先明确 Provider timeout、retry、fallback 的错误语义和可观测字段；如果路由体积妨碍实现，先做无行为变化的受控拆分。
+Chat-Day12：执行可复现并发压测，记录场景、并发度、吞吐量、P50/P95 延迟和错误率；不再扩展业务功能。
 <!-- LLM_GATEWAY_PLUS_END -->
 
 
@@ -73,6 +74,8 @@ Chat-Day11：先明确 Provider timeout、retry、fallback 的错误语义和可
 * 全局中间件：`x-trace-id` + latency 日志
 * 统一 ChatProvider：MockProvider / OllamaProvider / OpenAIProvider
 * ProviderFactory：屏蔽不同模型服务调用差异，OpenAI SDK 按需懒加载
+* Provider resilience：timeout、retry、exponential backoff、opt-in fallback；流式只允许在首个非空 token 前重试或切换
+* Provider observability：原生接口使用 `provider_execution`，OpenAI-compatible 接口使用 `gateway.provider_execution`，记录尝试链、最终 Provider、重试数和 fallback 状态
 * RAG：KB 入库/检索、同步/流式上下文注入、citations 溯源
 * RAG backend abstraction：`RAG_BACKEND=native|langchain`；`/chat` 与 `/chat/stream` 已统一通过 backend 构建 RAG 上下文，LangChain backend 已支持真实检索，并暴露 RAG observability timing
 * Hybrid RAG：vector retrieval + lexical scoring + fusion rerank，并在 `metadata.rag` / SSE `rag` 中暴露 retrieval_mode/fusion/weights
@@ -196,6 +199,12 @@ curl http://localhost:8000/health
 * `OPENAI_MODEL`：OpenAI Provider 默认模型；请求体 `model` 优先级更高
 * `OPENAI_TIMEOUT_S` (default: `60`)
 * `OPENAI_COMPAT_DEFAULT_PROVIDER` (default: `mock`)：`/v1/chat/completions` 未传网关扩展字段 `provider` 时使用的默认 Provider
+* `PROVIDER_RETRY_MAX_ATTEMPTS` (default: `2`)：单个 Provider 最大尝试次数，包含首次调用
+* `PROVIDER_RETRY_BASE_DELAY_MS` (default: `100`)：指数退避初始延迟
+* `PROVIDER_RETRY_MAX_DELAY_MS` (default: `1000`)：指数退避延迟上限
+* `PROVIDER_FALLBACK_ENABLED` (default: `false`)：是否在 primary 的可重试错误耗尽后启用 fallback
+* `PROVIDER_FALLBACK_PROVIDER`：fallback Provider；启用 fallback 时必填且不能形成自循环
+* `PROVIDER_FALLBACK_MODEL`：fallback 专用模型；为空时使用 fallback Provider 默认模型，不复用 primary 请求模型
 * `DATABASE_URL` (default: `sqlite:///./data/chat_api.db`)：Conversation / Message / UsageRecord / UsageCost / APIKey 关系数据库连接地址；未来可切换 PostgreSQL
 * `API_AUTH_ENABLED` (default: `false`)：是否启用业务 API 的 API Key 鉴权
 * `API_KEY_HASH_PEPPER`：服务端 HMAC pepper；启用认证时必须安全配置，不能写入数据库或提交到 Git
@@ -286,6 +295,58 @@ POST /prompt/compare
 - OllamaProvider 继续使用现有 `/api/generate` 协议，避免在 Provider 重构时同时改变模型协议。
 - OpenAIProvider 支持 OpenAI / OpenAI-compatible endpoint，SDK 懒加载，缺少 API key 时沿用现有 502 错误契约。
 - 无调用方的旧 `src/app/llm/engines/` 已删除；`src/app/llm/providers/` 是唯一模型调用边界。
+
+---
+
+## Provider Resilience (Chat-Day11)
+
+`ProviderFactory` 返回由 `ResilientChatProvider` 包装的统一 Provider。路由、RAG、PromptHub、会话持久化与 usage/cost 不各自实现 retry，从而避免不同入口出现不同容错语义。
+
+默认策略：
+
+```dotenv
+PROVIDER_RETRY_MAX_ATTEMPTS=2
+PROVIDER_RETRY_BASE_DELAY_MS=100
+PROVIDER_RETRY_MAX_DELAY_MS=1000
+PROVIDER_FALLBACK_ENABLED=false
+PROVIDER_FALLBACK_PROVIDER=
+PROVIDER_FALLBACK_MODEL=
+```
+
+错误语义：
+
+| 错误 | retry | fallback |
+|---|---:|---:|
+| timeout、connection failure、HTTP 408/429/5xx | 是 | primary 尝试耗尽后可用 |
+| dependency/configuration error、其他 HTTP 4xx、未知 invocation error | 否 | 否 |
+| 已输出非空 token 后的 stream interruption | 否 | 否 |
+
+约束：
+
+- `max_attempts` 包含首次调用；重试使用有上限的指数退避。
+- fallback 默认关闭，只能在 primary 的可重试错误耗尽后触发。
+- fallback 请求使用 `PROVIDER_FALLBACK_MODEL` 或 fallback 默认模型，不把 primary 的 request-level model 错误地传给另一个 Provider。
+- OpenAI SDK 内置重试固定为 `max_retries=0`，避免 SDK 与网关产生双重重试。
+- 流式调用可在首个非空 token 前 retry/fallback；一旦输出开始，失败统一为 `provider_stream_interrupted`，不重放内容。
+- 成功后的 Message、UsageRecord 与 UsageCost 归属于最终成功的 Provider/Model；失败尝试仅进入 resilience 可观测信息。
+
+公开可观测字段：
+
+```text
+/chat、/prompt/compare
+  -> metadata.provider_execution
+
+/chat/stream
+  -> usage.provider_execution 或 error.provider_execution
+
+/v1/chat/completions（同步）
+  -> gateway.provider_execution
+
+/v1/chat/completions（流式）
+  -> finish chunk 或 error 的 gateway.provider_execution
+```
+
+`provider_execution` 包含 `primary_provider`、`final_provider`、`total_attempts`、`retries`、`fallback_used` 和逐次 `attempts`。原生 SSE 仍保持 `meta -> token* -> usage -> done` 或 `meta -> token* -> error`；OpenAI-compatible SSE 仍以 `[DONE]` 作为成功终止标记。
 
 ---
 
@@ -1717,8 +1778,8 @@ REQUEST_RATE_LIMIT_ENABLED=false \
 TOKEN_QUOTA_ENABLED=false \
 pytest -q
 
-# Chat-Day10 + Day9B local acceptance:
-# 256 passed, 0 skipped, 0 warnings
+# Chat-Day11 local acceptance:
+# 286 passed, 0 skipped, 0 warnings
 ```
 
 `pytest.ini` 使用 `-ra --strict-config --strict-markers` 并将 warning 视为 error。下方各 Chat-Day 数量是对应阶段的历史快照；当前验收结果以本节和 README 顶部为准。
@@ -1735,6 +1796,18 @@ tests/prompt/test_prompt_compare_provider_compatibility.py
 Chat-Day3 / Day4：
 
 ```text
+tests/openai_compat/test_chat_completions.py
+tests/openai_compat/test_chat_completions_stream.py
+```
+
+Chat-Day11：
+
+```text
+tests/providers/test_provider_errors.py
+tests/providers/test_provider_resilience.py
+tests/providers/test_provider_resilience_routes.py
+tests/chat/test_chat_error_contract.py
+tests/stream/test_stream_error_contract.py
 tests/openai_compat/test_chat_completions.py
 tests/openai_compat/test_chat_completions_stream.py
 ```
