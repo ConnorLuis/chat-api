@@ -1,0 +1,4 @@
+-c constraints.txt
+
+# Optional real Hugging Face embedding backend.
+sentence-transformers

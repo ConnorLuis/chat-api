@@ -1,79 +1,58 @@
 # chat-api
 
 <!-- LLM_GATEWAY_PLUS_START -->
-## v2-plus Upgrade Positioning
+## v2-plus 当前状态（Chat-Day10 completed / Chat-Day9B closure）
 
-`chat-api` 已从完成的 `v2-langchain-rag` 基线进入升级分支：
+- 目标分支：`v2-langchain-rag-plus`
+- Day9B 收口分支：`chat-day9b-cleanup`
+- 当前代码基线：`e8e0ab3 feat(day10): account OpenAI-compatible streaming usage`
+- 项目定位：production-oriented、单租户的 LLM Chat Gateway
+
+### 已完成能力
+
+- Chat-Day1～Day6：统一 Provider、OpenAI-compatible sync/stream、Conversation / Message 持久化、多会话历史和 token budget 截断
+- Chat-Day7：UsageRecord、统一 token accounting，以及成功、Provider 失败、客户端断开和持久化失败状态
+- Chat-Day8：版本化价格目录、Decimal 成本估算、UsageCost 快照和 usage reporting API
+- Chat-Day9：API Key 一次性明文创建、HMAC-SHA256 + server pepper、active/revoked、Bearer / `X-API-Key`、CallerIdentity 和路由保护
+- Chat-Day10：用户/IP 请求限流、可信代理开关、caller-aware 每日 token quota，以及原生和 OpenAI-compatible 同步/流式 usage 结算
+
+### Chat-Day9B 收口
+
+- 使用 `constraints.txt` 固定核心、测试和可选集成依赖版本
+- CI 安装 LangChain/OpenAI 可选依赖，执行 `pip check`、warnings-as-errors 编译和完整测试
+- pytest 将 warning 视为 error；core-only 环境中的 optional skip 带有明确原因
+- Ollama 默认地址统一为 `http://127.0.0.1:11434`
+- embedding 默认值改为可移植 Hugging Face 模型 ID
+- 修复 HF embedding 初始化和 timezone-aware UTC 时间
+- 删除无调用方的旧 `src/app/llm/engines/`
+- 取消 Git 对 Chroma、KB 文档和 SQLite 运行产物的跟踪
+- 提供完整 `.env.example`，并整理 `.gitignore`
+
+### 当前严格验收
 
 ```text
-v2-langchain-rag-plus
+Python 3.10.19
+pip check -> No broken requirements found
+python -W error -m compileall -q src scripts -> passed
+pytest -q -> 256 passed
+skipped -> 0
+warnings -> 0
+git diff --check -> passed
 ```
 
-当前定位：
-
-```text
-Production-ready LLM Chat Gateway / 多模型统一接入与流式对话后端系统
-```
+当前 Day9B 补丁需在推送后以最新 GitHub Actions run 完成远端验收。
 
 ### 项目边界
 
-`agent-api` 已覆盖 Agentic RAG、GraphRAG、Multi-Agent 与 MCP。`chat-api` 不重复建设 Agent 编排平台，而是聚焦生产级 Chat Gateway：统一 Provider、OpenAI-compatible 协议、会话持久化、usage/cost、认证、限流、缓存、容错、部署与可观测性。
-
-### 当前进度
-
-```text
-Chat-Day1-Day6:
-  分支定位、Provider、OpenAI-compatible sync/stream、SQLAlchemy、
-  Conversation API、history/context window、同步/流式原子持久化。
-
-Chat-Day7:
-  UsageRecord、provider_native/local_estimate/unavailable、
-  succeeded/provider_failed/client_disconnected/persistence_failed。
-
-Chat-Day8:
-  versioned pricing catalog、Decimal estimator、UsageCost snapshot、
-  usage records/summary/daily/providers/models API。
-
-Chat-Day9:
-  one-time plaintext API key creation、HMAC hash + server-side pepper、
-  APIKey lifecycle、Bearer/X-API-Key、CallerIdentity、公开/受保护路由、
-  原生/OpenAI-compatible 双错误契约、真实吊销与明文扫描。
-```
-
-Current validation:
-
-```text
-pytest tests/auth -q -> 20 passed
-pytest tests/chat -q -> 20 passed
-pytest tests/conversations -q -> 7 passed
-pytest tests/db -q -> 36 passed
-pytest tests/stream -q -> 24 passed
-pytest tests/usage -q -> 6 passed
-pytest tests/cost -q -> 9 passed
-pytest tests/usage_api -q -> 7 passed
-pytest tests/openai_compat -q -> 12 passed
-pytest -q -> 204 passed
-external API_AUTH_ENABLED isolation -> 16 passed
-manual HTTP auth acceptance -> passed
-revocation acceptance -> passed
-database plaintext scan -> passed
-repository secret scan -> passed
-Day8 -> Day9 additive SQLite schema boundary -> passed
-GitHub Actions CI -> success
-Day9 commit message -> feat(day9): add API key authentication
-```
-
-Local-only roadmap：`LLM_GATEWAY_ROADMAP.md`，不进入 git。
+`agent-api` 负责 Agentic RAG、GraphRAG、Multi-Agent 和 MCP。`chat-api` 不继续增加 Agent 编排能力，后续只完成 Provider timeout/retry/fallback、并发压测、Docker 和最终发布文档。
 
 ### 下一步
 
-```text
-Chat-Day10: Rate limit / token quota
-```
+Chat-Day11：先明确 Provider timeout、retry、fallback 的错误语义和可观测字段；如果路由体积妨碍实现，先做无行为变化的受控拆分。
 <!-- LLM_GATEWAY_PLUS_END -->
 
 
-一个最小可用的 FastAPI 聊天服务（工程化训练用），支持：
+一个面向生产工程实践的 FastAPI LLM Chat Gateway，支持：
 
 * `GET /health`：liveness 健康检查
 * `GET /ready`：数据库 readiness 检查
@@ -90,6 +69,8 @@ Chat-Day10: Rate limit / token quota
 * Cost estimation：版本化 `pricing_catalog.json`、Decimal 精度、独立 `UsageCost` 历史快照，区分 `estimated|unknown_price|usage_unavailable`
 * Usage reporting API：`/usage/pricing|records|summary|daily|providers|models`，支持时间范围、状态、Provider/Model、分页与多币种分组
 * API Key authentication：明文只在创建时返回一次，数据库仅存 prefix、HMAC hash 与 metadata；支持 active/revoked、Bearer、X-API-Key 和 CallerIdentity
+* Request rate limit：支持用户/API Key 与 IP 维度的请求限制，并默认不信任代理转发头
+* Daily token quota：按 caller 统计每日 token，覆盖原生与 OpenAI-compatible 同步/流式路径
 * 全局中间件：`x-trace-id` + latency 日志
 * 统一 ChatProvider：MockProvider / OllamaProvider / OpenAIProvider
 * ProviderFactory：屏蔽不同模型服务调用差异，OpenAI SDK 按需懒加载
@@ -116,11 +97,30 @@ Chat-Day10: Rate limit / token quota
 
 ### 1) Activate env & install deps
 
+核心运行环境：
+
 ```bash
 conda activate chatapi
 python -m pip install -r requirements.txt
 ```
 
+本地开发与完整测试：
+
+```bash
+python -m pip install \
+  -r requirements-dev.txt \
+  -r requirements-langchain.txt \
+  -r requirements-openai.txt
+```
+
+`constraints.txt` 固定直接依赖和兼容性关键依赖版本。升级版本时必须同时执行 `pip check`、warnings-as-errors 编译和完整测试。
+
+复制环境变量模板；应用不会自动加载 `.env`：
+
+```bash
+cp .env.example .env
+set -a && source .env && set +a
+```
 
 ### Optional: LangChain backend dependencies (Day24 / v2)
 
@@ -139,12 +139,11 @@ requirements-langchain.txt
 包含：
 
 ```text
-langchain
-langchain-ollama
+langchain-core
 langchain-chroma
 ```
 
-主 `requirements.txt` 不包含 LangChain，避免 CI 和基础测试被可选依赖污染。
+项目没有直接使用高层 `langchain` 或 `langchain-ollama` 包。主 `requirements.txt` 不安装 LangChain；完整 CI 会显式安装 `requirements-langchain.txt`，因此 LangChain contract/observability 测试不会被跳过。
 
 ### Optional: OpenAI Provider / SDK dependencies (Chat-Day2–Chat-Day4)
 
@@ -160,7 +159,18 @@ python -m pip install -r requirements-openai.txt
 requirements-openai.txt
 ```
 
-`openai` SDK 在 `OpenAIProvider` 真正执行请求时才懒加载，因此基础 CI、MockProvider 和 OllamaProvider 不依赖 OpenAI SDK。Chat-Day3 完成非流式 SDK 兼容验证，Chat-Day4 完成 `stream=True` 流式客户端验证；本地验证版本为 `openai 2.45.0`。
+`openai` SDK 在 `OpenAIProvider` 真正执行请求时才懒加载，因此核心运行环境、MockProvider 和 OllamaProvider 不依赖 OpenAI SDK。完整 CI 会安装该文件并覆盖 OpenAI-compatible contract。
+
+### Optional: real Hugging Face embeddings
+
+测试和 CI 默认使用 deterministic mock embedding。真实语义 embedding 按需安装：
+
+```bash
+python -m pip install -r requirements-embeddings.txt
+export EMBEDDING_PROVIDER=hf
+```
+
+默认模型 ID 为 `maidalun1020/bce-embedding-base_v1`；也可以通过 `EMBEDDING_MODEL` 指向本地路径。
 
 ### 2) Run server
 
@@ -190,18 +200,30 @@ curl http://localhost:8000/health
 * `DATABASE_URL` (default: `sqlite:///./data/chat_api.db`)：Conversation / Message / UsageRecord / UsageCost / APIKey 关系数据库连接地址；未来可切换 PostgreSQL
 * `API_AUTH_ENABLED` (default: `false`)：是否启用业务 API 的 API Key 鉴权
 * `API_KEY_HASH_PEPPER`：服务端 HMAC pepper；启用认证时必须安全配置，不能写入数据库或提交到 Git
+* `REQUEST_RATE_LIMIT_ENABLED` (default: `false`)：是否启用请求限流
+* `USER_RATE_LIMIT_REQUESTS` (default: `60`) / `USER_RATE_LIMIT_WINDOW_SECONDS` (default: `60`)
+* `IP_RATE_LIMIT_REQUESTS` (default: `120`) / `IP_RATE_LIMIT_WINDOW_SECONDS` (default: `60`)
+* `RATE_LIMIT_TRUST_PROXY_HEADERS` (default: `false`)：仅在可信反向代理会覆盖客户端 IP 头时启用
+* `TOKEN_QUOTA_ENABLED` (default: `false`)：是否启用 caller-aware 每日 token quota
+* `DAILY_TOKEN_QUOTA_TOKENS` (default: `100000`)
 * `PRICING_CATALOG_PATH` (default: `config/pricing_catalog.json`)：版本化 Provider/Model prompt/completion 单价目录
 * `CONVERSATION_HISTORY_MAX_TURNS` (default: `10`)：最多保留的最近 user-led 历史轮数
 * `CONVERSATION_CONTEXT_TOKEN_BUDGET` (default: `4096`)：历史 + 当前请求 + system prompt 的估算 token 上限
 * `CONVERSATION_HISTORY_FETCH_LIMIT` (default: `500`)：从数据库读取的最大历史消息条数
+* `PROMPTS_DIR` (default: `prompts`)
 * `RUN_LOG_PATH` (default: `runs/prompt_runs.jsonl`)
 * `KB_DIR` (default: `kb`)
 * `KB_CHROMA_DIR` (default: `${KB_DIR}/chroma`)
-* `KB_TOP_K` (default: `5`)
+* `KB_COLLECTION` (default: `kb_chunks`)
+* `KB_CHUNK_SIZE` (default: `800`) / `KB_CHUNK_OVERLAP` (default: `120`)
+* `KB_TOP_K` (default: `3`)
 * `KB_CANDIDATE_K` (default: `50`)：先召回更大候选池，再 rerank 截断到 `kb_top_k`
+* `KB_MAX_CONTEXT_CHARS` (default: `2000`)
+* `DOCS_DIR` (default: `${KB_DIR}/docs`) / `INDEX_FILE` (default: `${KB_DIR}/docs.jsonl`)
 * `RAG_BACKEND` (default: `native`, options: `native|langchain`)：Day24 新增 backend skeleton；Day25 接入 `/chat` 与 `/chat/stream`；Day26 已实现 LangChain Chroma retriever；Day27 暴露 observability；Day28 使用 Hybrid fusion rerank
 * `EMBEDDING_PROVIDER` (default: `mock`, options: `mock|hf`)
-* `EMBEDDING_MODEL`：HF embedding 模型名或本地路径
+* `EMBEDDING_MODEL` (default: `maidalun1020/bce-embedding-base_v1`)：HF embedding 模型名或本地路径
+* `EMBEDDING_DIM` (default: `512`)：mock embedding 维度
 
 ### WSL2 -> Windows Ollama
 
@@ -264,7 +286,7 @@ POST /prompt/compare
 - MockProvider 无网络依赖，用于 deterministic tests 和 CI。
 - OllamaProvider 继续使用现有 `/api/generate` 协议，避免在 Provider 重构时同时改变模型协议。
 - OpenAIProvider 支持 OpenAI / OpenAI-compatible endpoint，SDK 懒加载，缺少 API key 时沿用现有 502 错误契约。
-- 旧 `src/app/llm/engines/` 暂时保留为历史兼容代码；当前聊天业务入口已迁移到 `src/app/llm/providers/`。
+- 无调用方的旧 `src/app/llm/engines/` 已删除；`src/app/llm/providers/` 是唯一模型调用边界。
 
 ---
 
@@ -1462,7 +1484,7 @@ curl -s -X POST http://127.0.0.1:8000/v1/chat/completions \
   -d '{"provider":"mock","model":"mock-model","messages":[{"role":"user","content":"authenticated"}]}'
 ```
 
-### Acceptance
+### Historical Chat-Day9 acceptance snapshot
 
 ```text
 public/protected HTTP boundary -> passed
@@ -1688,9 +1710,19 @@ data: <string-or-json>
 ## Tests
 
 ```bash
+python -m pip check
+python -W error -m compileall -q src scripts
+EMBEDDING_PROVIDER=mock \
+API_AUTH_ENABLED=false \
+REQUEST_RATE_LIMIT_ENABLED=false \
+TOKEN_QUOTA_ENABLED=false \
 pytest -q
-# 204 passed (Chat-Day9)
+
+# Chat-Day10 + Day9B local acceptance:
+# 256 passed, 0 skipped, 0 warnings
 ```
+
+`pytest.ini` 使用 `-ra --strict-config --strict-markers` 并将 warning 视为 error。下方各 Chat-Day 数量是对应阶段的历史快照；当前验收结果以本节和 README 顶部为准。
 
 Chat-Day2：
 
@@ -1807,31 +1839,36 @@ OpenAI-compatible、旧 SSE、RAG、PromptHub、Replay 无回归
 
 ## CI (Day23)
 
-Day23 新增 GitHub Actions：
+Day23 建立 GitHub Actions；Day9B 将其升级为当前完整验收入口：
 
 - workflow: `.github/workflows/ci.yml`
-- trigger: push to all branches / pull_request to `master`
+- trigger: push / pull request to all branches
 - Python: 3.10
-- command: `pytest -q`
+- actions: `actions/checkout@v5`、`actions/setup-python@v6`
 - embedding: `EMBEDDING_PROVIDER=mock`
 
-CI 使用 `requirements.txt` 安装基础服务与测试依赖：
+CI 使用同一次 pip invocation 安装核心、测试和需要实际执行的可选集成：
 
 ```bash
-python -m pip install -r requirements.txt
+python -m pip install \
+  -r requirements-dev.txt \
+  -r requirements-langchain.txt \
+  -r requirements-openai.txt
+python -m pip check
+python -W error -m compileall -q src scripts
 pytest -q
 ```
 
 ### CI dependency note
 
-`sentence-transformers / torch / transformers` 没有放进默认 `requirements.txt`。
-原因是 CI 测试使用 `EMBEDDING_PROVIDER=mock`，不需要真实 HF embedding 依赖。
+`sentence-transformers / torch / transformers` 仍不进入完整 CI；embedding contract 通过 fake module 测试初始化、维度和 encode 行为，避免下载真实模型。真实演示使用 `requirements-embeddings.txt`。
 
 Day23 修复了一个 CI import 问题：
 
 - 问题：`src/app/kb/embeddings.py` 顶层 import `sentence_transformers`，导致 mock embedding 的 CI 也失败。
 - 修复：将 `sentence_transformers` 改为 HF provider 内部懒加载。
-- 效果：基础 CI 保持轻量，真实 HF embedding 仍可按需启用。
+- Day9B：修复 `HFEmbeddingEngine` 初始化边界，并增加 fake-module contract test。
+- 效果：CI 保持轻量，LangChain/OpenAI contracts 实际执行，真实 HF embedding 仍可按需启用。
 
 ---
 
@@ -2045,10 +2082,10 @@ curl -s "http://localhost:8000/kb/search?q=RAG&top_k=3" | cat
 * `KB_COLLECTION` (default: `kb_chunks`)
 * `KB_CHUNK_SIZE` (default: `800`)
 * `KB_CHUNK_OVERLAP` (default: `120`)
-* `KB_TOP_K` (default: `5`)
+* `KB_TOP_K` (default: `3`)
 * `EMBEDDING_PROVIDER` (default: `mock`, options: `mock|hf`)
-* `EMBEDDING_MODEL` (hf provider)
-* `EMBEDDING_DIM` (mock provider)
+* `EMBEDDING_MODEL` (default: `maidalun1020/bce-embedding-base_v1`)
+* `EMBEDDING_DIM` (default: `512`, mock provider)
 
 ### Notes
 - 测试默认使用 `EMBEDDING_PROVIDER=mock`（稳定、无外部下载）。
@@ -3014,60 +3051,6 @@ p95_latency_ms = 2750
 All regression gates passed!
 ```
 
-### v2-plus Current Status (Chat-Day9 completed)
+### v2-plus Current Status
 
-当前分支：
-
-```text
-v2-langchain-rag-plus
-```
-
-已完成：
-
-```text
-Day2-Day6: Provider / OpenAI-compatible / SQLAlchemy / Conversation history
-Day7: UsageRecord and token accounting
-Day8: UsageCost and reporting APIs
-Day9: API Key authentication and CallerIdentity
-```
-
-当前数据模型：
-
-```text
-Conversation
-Message
-UsageRecord
-UsageCost
-APIKey(id/prefix/key_hash/name/status/created_at/revoked_at)
-```
-
-当前路由边界：
-
-```text
-Public: /health /ready /docs /redoc /openapi.json /demo
-Auth: /auth/whoami
-Protected: /chat /chat/stream /v1/chat/completions /conversations/**
-           /usage/** /kb/** /prompts /prompt/compare /runs/**
-```
-
-最终验收：
-
-```text
-pytest tests/auth -q -> 20 passed
-pytest tests/db -q -> 36 passed
-pytest -q -> 204 passed
-HTTP authentication acceptance -> passed
-revocation contract -> passed
-database plaintext scan -> passed
-repository secret scan -> passed
-additive SQLite schema boundary -> passed
-GitHub Actions CI -> success
-```
-
-下一里程碑：
-
-```text
-Chat-Day10: Rate limit / token quota
-```
-
-Day10 应复用 `CallerIdentity.key_id`，分离 request rate limit 与 token quota，并明确 429、Retry-After、remaining/reset、流式扣减和 Redis 分布式边界。
+本节以上内容保留了各阶段的历史设计与验收快照。当前能力、严格测试结果、项目边界和下一步以 README 顶部的 `v2-plus 当前状态` 为唯一事实源，避免在文档尾部维护第二份易过期状态。

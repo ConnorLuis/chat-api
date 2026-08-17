@@ -1,3 +1,6 @@
-langchain
-langchain-ollama
+-c constraints.txt
+
+# Optional RAG backend dependencies. The project does not use the high-level
+# langchain package or langchain-ollama directly.
+langchain-core
 langchain-chroma

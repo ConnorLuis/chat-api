@@ -72,7 +72,7 @@ class Settings:
     # Ollama 服务的基础地址	http://127.0.0.1:11434	直接返回字符串
     @property
     def OLLAMA_BASE_URL(self) -> str:
-        return getenv("OLLAMA_BASE_URL", "http://127.0.0.1:9999")
+        return getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
 
     # 默认使用的 Ollama 模型名	qwen2.5:7b	直接返回字符串
     @property
@@ -120,7 +120,7 @@ class Settings:
     # API Key authentication
     @property
     def API_AUTH_ENABLED(self) -> bool:
-        """认证迁移开关；Day9 验收时显式启用."""
+        """是否要求业务接口提供有效的服务 API Key。"""
 
         return getenv_bool(
             "API_AUTH_ENABLED",
@@ -306,7 +306,7 @@ class Settings:
     # hf 模型路径/名字
     @property
     def EMBEDDING_MODEL(self) -> str:
-        return getenv("EMBEDDING_MODEL", "/mnt/f/LLM/maidalun/bce-embedding-base_v1")
+        return getenv("EMBEDDING_MODEL", "maidalun1020/bce-embedding-base_v1")
 
     # 文档地址
     @property

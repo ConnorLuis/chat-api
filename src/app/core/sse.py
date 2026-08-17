@@ -17,9 +17,10 @@ def _to_text(data: Any) -> str:
         data_str = str(data)
     return data_str
 
-"""生成符合 SSE（Server-Sent Events，服务器推送事件）标准格式的字符串
-    event: 事件类型message(正常消息)\error(错误)\done(流式结束)
-    data: 推送的数据（必须是字符串，JSON需序列化）
+"""生成符合 SSE（Server-Sent Events）标准格式的字符串。
+
+event 支持 message、error、done 等事件类型；data 必须是字符串，
+dict/list 会在 `_to_text` 中序列化为 JSON。
 """
 def sse_event(event: str, data: Any) -> str:
     text = _to_text(data)

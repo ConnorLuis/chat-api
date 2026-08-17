@@ -1,8 +1,20 @@
 import pytest
 
 
-pytest.importorskip("langchain_chroma")
-pytest.importorskip("langchain_core")
+pytest.importorskip(
+    "langchain_chroma",
+    reason=(
+        "optional LangChain RAG contract; install "
+        "requirements-langchain.txt to run it"
+    ),
+)
+pytest.importorskip(
+    "langchain_core",
+    reason=(
+        "optional LangChain RAG contract; install "
+        "requirements-langchain.txt to run it"
+    ),
+)
 
 
 def test_langchain_backend_chat_rag_contract(client, isolated_kb_env, monkeypatch):

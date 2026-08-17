@@ -13,7 +13,7 @@ client = TestClient(app)
 """
 def test_stream_error_contract(monkeypatch):
     # 临时覆盖环境变量 OLLAMA_BASE_URL，指向本地 1 号端口（该端口几乎不会有服务监听）；
-    # OllamaEngine 初始化时会读取这个错误的地址，调用 /api/generate 时会触发连接拒绝 / 超时错误；
+    # OllamaProvider 初始化时会读取这个错误的地址，调用 /api/generate 时会触发连接拒绝 / 超时错误；
     monkeypatch.setenv("OLLAMA_BASE_URL", "http://127.0.0.1:1")
 
     payload = {

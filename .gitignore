@@ -1,48 +1,36 @@
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.pytest_cache/
-.mypy_cache/
-
-.env
-.venv/
-# Python
+# Python bytecode and test/tool caches
 __pycache__/
 *.py[cod]
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.coverage
+htmlcov/
 
-# Env
-.env
+# Virtual environments and local secrets
 .venv/
-/runs/
-.idea/
+.venv-*/
+venv/
+.env
+.env.example
+!.env.example
 
-# Runtime KB artifacts
+# IDE/editor state
+.idea/
+.vscode/
+.qoder/
+
+# Application runtime state
+data/
+runs/
+*.db
+*.sqlite3
+*.log
 kb/chroma/
 kb/docs/
 kb/docs.jsonl
 
-# Local backups
-backup_kb_reset/
-
-# Eval generated outputs
-eval/results/
-eval/kb_seed_manifest.jsonl
-eval/qa_q019.jsonl
-eval/qa_probe_5.jsonl
-
-# Shell heredoc leftovers
-PY
-for
-
-# Python cache
-__pycache__/
-*.pyc
-
-# Eval generated outputs
+# Generated evaluation outputs
 eval/results/
 eval/reports/
 eval/results.jsonl
@@ -52,22 +40,7 @@ eval/kb_seed_manifest_old.jsonl
 eval/qa_q019.jsonl
 eval/qa_probe_5.jsonl
 
-# Runtime KB artifacts
-kb/chroma/
-kb/docs/
-kb/docs.jsonl
-
-# Local backups
+# Local backups and accidental shell leftovers
 backup_kb_reset/
-
-# Shell heredoc leftovers
-PY
-for
-
-# Python cache
-__pycache__/
-*.pyc
-.qoder/
-
-# Local relational database runtime
-data/
+/PY
+/for
