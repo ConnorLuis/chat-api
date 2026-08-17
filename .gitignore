@@ -40,6 +40,9 @@ eval/kb_seed_manifest_old.jsonl
 eval/qa_q019.jsonl
 eval/qa_probe_5.jsonl
 
+# Generated load-test outputs
+benchmarks/results/
+
 # Local backups and accidental shell leftovers
 backup_kb_reset/
 /PY

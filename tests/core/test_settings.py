@@ -46,6 +46,21 @@ def test_invalid_auth_boolean_is_rejected(monkeypatch):
         _ = Settings().API_AUTH_ENABLED
 
 
+def test_application_log_level_default_and_override(monkeypatch):
+    monkeypatch.delenv("APP_LOG_LEVEL", raising=False)
+    assert Settings().APP_LOG_LEVEL == "INFO"
+
+    monkeypatch.setenv("APP_LOG_LEVEL", " warning ")
+    assert Settings().APP_LOG_LEVEL == "WARNING"
+
+
+def test_invalid_application_log_level_is_rejected(monkeypatch):
+    monkeypatch.setenv("APP_LOG_LEVEL", "verbose")
+
+    with pytest.raises(ValueError, match="APP_LOG_LEVEL"):
+        _ = Settings().APP_LOG_LEVEL
+
+
 def test_provider_resilience_defaults(monkeypatch):
     keys = (
         "PROVIDER_RETRY_MAX_ATTEMPTS",

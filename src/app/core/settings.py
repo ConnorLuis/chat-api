@@ -93,6 +93,26 @@ def getenv_float(
 
 """
 class Settings:
+    @property
+    def APP_LOG_LEVEL(self) -> str:
+        value = getenv(
+            "APP_LOG_LEVEL",
+            "INFO",
+        ).strip().upper()
+        allowed = {
+            "CRITICAL",
+            "ERROR",
+            "WARNING",
+            "INFO",
+            "DEBUG",
+        }
+        if value not in allowed:
+            raise ValueError(
+                "APP_LOG_LEVEL must be one of: "
+                + ", ".join(sorted(allowed))
+            )
+        return value
+
     # Ollama 服务的基础地址	http://127.0.0.1:11434	直接返回字符串
     @property
     def OLLAMA_BASE_URL(self) -> str:

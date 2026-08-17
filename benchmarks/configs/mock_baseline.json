@@ -1,0 +1,74 @@
+{
+  "suite_name": "mock-baseline",
+  "base_url": "http://127.0.0.1:8000",
+  "api_key_env": "CHAT_API_KEY",
+  "metadata": {
+    "purpose": "deterministic gateway and persistence baseline",
+    "provider": "mock",
+    "server_workers": 1,
+    "application_log_level": "WARNING",
+    "server_log_level": "warning",
+    "uvicorn_access_log": false,
+    "database": "isolated SQLite",
+    "rate_limit_enabled": false,
+    "token_quota_enabled": false
+  },
+  "defaults": {
+    "provider": "mock",
+    "model": "mock-load-model",
+    "prompt": "ping",
+    "max_tokens": 16,
+    "timeout_s": 30,
+    "warmup_requests": 5
+  },
+  "scenarios": [
+    {
+      "name": "native-sync-c1",
+      "mode": "native_sync",
+      "requests": 100,
+      "concurrency": 1
+    },
+    {
+      "name": "native-sync-c10",
+      "mode": "native_sync",
+      "requests": 300,
+      "concurrency": 10
+    },
+    {
+      "name": "native-sync-c50",
+      "mode": "native_sync",
+      "requests": 500,
+      "concurrency": 50
+    },
+    {
+      "name": "native-stream-c1",
+      "mode": "native_stream",
+      "requests": 20,
+      "concurrency": 1
+    },
+    {
+      "name": "native-stream-c10",
+      "mode": "native_stream",
+      "requests": 50,
+      "concurrency": 10
+    },
+    {
+      "name": "native-stream-c25",
+      "mode": "native_stream",
+      "requests": 100,
+      "concurrency": 25
+    },
+    {
+      "name": "openai-sync-c10",
+      "mode": "openai_sync",
+      "requests": 200,
+      "concurrency": 10
+    },
+    {
+      "name": "openai-stream-c10",
+      "mode": "openai_stream",
+      "requests": 50,
+      "concurrency": 10
+    }
+  ]
+}

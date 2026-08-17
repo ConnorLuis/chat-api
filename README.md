@@ -1,7 +1,7 @@
 # chat-api
 
 <!-- LLM_GATEWAY_PLUS_START -->
-## v2-plus 当前状态（Chat-Day11 completed）
+## v2-plus 当前状态（Chat-Day11 completed / Chat-Day12 local acceptance passed）
 
 - 目标分支：`v2-langchain-rag-plus`
 - Day9B 收口提交：`09a2222 chore(day9b): close repository and CI hygiene`
@@ -15,6 +15,7 @@
 - Chat-Day9：API Key 一次性明文创建、HMAC-SHA256 + server pepper、active/revoked、Bearer / `X-API-Key`、CallerIdentity 和路由保护
 - Chat-Day10：用户/IP 请求限流、可信代理开关、caller-aware 每日 token quota，以及原生和 OpenAI-compatible 同步/流式 usage 结算
 - Chat-Day11：统一 Provider 错误分类、显式 timeout、指数退避 retry、可选 fallback、流式首 token 边界，以及原生/OpenAI-compatible 可观测字段
+- Chat-Day12（待实测收口）：可复现并发压测器、固定场景矩阵、逐请求原始样本，以及吞吐量、P50/P95/P99、错误率和流式 TTFT 自动报告
 
 ### Chat-Day9B 收口
 
@@ -28,7 +29,7 @@
 - 取消 Git 对 Chroma、KB 文档和 SQLite 运行产物的跟踪
 - 提供完整 `.env.example`，并整理 `.gitignore`
 
-### 当前严格验收
+### 最近已收口严格验收（Day11）
 
 ```text
 Python 3.10.19
@@ -40,15 +41,17 @@ warnings -> 0
 git diff --check -> passed
 ```
 
-Chat-Day9B 已通过本地与目标分支远端验收。Chat-Day11 已通过本地严格验收；目标分支远端验收以本次 Day11 提交对应的 GitHub Actions passed 为准。
+Chat-Day9B 已通过本地与目标分支远端验收。Chat-Day11 提交 `39ad9d4` 已通过本地严格验收和 GitHub Actions run `32028750201`。Day12 工具代码已通过目标 Python 3.10 环境全量回归，仍须用三次本机实际压测报告和目标分支 CI 完成收口。
+
+Day12 本地验收：Python 3.10.19，warnings-as-errors compile passed，`303 passed in 18.38s`，`git diff --check` passed。交付前还以真实应用执行了 8 场景、1320 个测量请求的端到端工具验证，并确认能够识别 SQLite 并发写锁失败。最终验收仍以三次本机报告和目标分支 CI 为准。
 
 ### 项目边界
 
-`agent-api` 负责 Agentic RAG、GraphRAG、Multi-Agent 和 MCP。`chat-api` 不继续增加 Agent 编排能力，后续只完成并发压测、Docker 和最终发布文档。
+`agent-api` 负责 Agentic RAG、GraphRAG、Multi-Agent 和 MCP。`chat-api` 不继续增加 Agent 编排能力，后续只完成 Day12 实测报告、Docker 和最终发布文档。
 
 ### 下一步
 
-Chat-Day12：执行可复现并发压测，记录场景、并发度、吞吐量、P50/P95 延迟和错误率；不再扩展业务功能。
+运行 `benchmarks/configs/mock_baseline.json` 三次，保留实际 `report.md`，复核吞吐量、P50/P95、错误率和流式 TTFT；如本机 Ollama 可用，再补一组注明硬件和模型的端到端结果。
 <!-- LLM_GATEWAY_PLUS_END -->
 
 
@@ -76,6 +79,7 @@ Chat-Day12：执行可复现并发压测，记录场景、并发度、吞吐量�
 * ProviderFactory：屏蔽不同模型服务调用差异，OpenAI SDK 按需懒加载
 * Provider resilience：timeout、retry、exponential backoff、opt-in fallback；流式只允许在首个非空 token 前重试或切换
 * Provider observability：原生接口使用 `provider_execution`，OpenAI-compatible 接口使用 `gateway.provider_execution`，记录尝试链、最终 Provider、重试数和 fallback 状态
+* Reproducible load testing：固定 JSON 场景矩阵，覆盖原生/OpenAI-compatible 同步与流式路径，输出 req/s、P50/P95/P99、错误率、TTFT 和逐请求样本
 * RAG：KB 入库/检索、同步/流式上下文注入、citations 溯源
 * RAG backend abstraction：`RAG_BACKEND=native|langchain`；`/chat` 与 `/chat/stream` 已统一通过 backend 构建 RAG 上下文，LangChain backend 已支持真实检索，并暴露 RAG observability timing
 * Hybrid RAG：vector retrieval + lexical scoring + fusion rerank，并在 `metadata.rag` / SSE `rag` 中暴露 retrieval_mode/fusion/weights
@@ -191,6 +195,7 @@ curl http://localhost:8000/health
 
 ## Environment variables
 
+* `APP_LOG_LEVEL` (default: `INFO`)：应用请求日志级别；正式压测固定为 `WARNING`
 * `OLLAMA_BASE_URL` (default: `http://127.0.0.1:11434`)
 * `OLLAMA_MODEL` (default: `qwen2.5:7b`)
 * `OLLAMA_TIMEOUT_S` (default: `60`)
@@ -347,6 +352,27 @@ PROVIDER_FALLBACK_MODEL=
 ```
 
 `provider_execution` 包含 `primary_provider`、`final_provider`、`total_attempts`、`retries`、`fallback_used` 和逐次 `attempts`。原生 SSE 仍保持 `meta -> token* -> usage -> done` 或 `meta -> token* -> error`；OpenAI-compatible SSE 仍以 `[DONE]` 作为成功终止标记。
+
+---
+
+## Reproducible Load Testing (Chat-Day12)
+
+Day12 使用项目内置、基于 `httpx` 的异步 HTTP 压测器，不新增运行依赖。它覆盖 `native_sync`、`native_stream`、`openai_sync` 和 `openai_stream`，warm-up 不计入测量，并把 HTTP 2xx 但响应契约不完整或 SSE 未正常终止的请求计为失败。
+
+服务端固定为单 worker、独立 SQLite 且关闭 limiter/quota 后运行：
+
+```bash
+python scripts/run_load_test.py \
+  --config benchmarks/configs/mock_baseline.json
+```
+
+输出位于 `benchmarks/results/<suite>-<UTC timestamp>/`：
+
+- `report.md`：吞吐量、P50/P95/P99、错误率和流式 TTFT 汇总；
+- `summary.json`：配置、Git commit、Python/平台信息和机器可读汇总；
+- `<scenario>.json`：逐请求 latency、TTFT、状态码和错误分类原始样本。
+
+完整启动命令、指标定义、复现规则和 Ollama 示例见 [`benchmarks/README.md`](benchmarks/README.md)。生成结果已被 Git 忽略；只有经过复核、注明环境的聚合数字才应摘录进项目文档。
 
 ---
 
@@ -1810,6 +1836,15 @@ tests/chat/test_chat_error_contract.py
 tests/stream/test_stream_error_contract.py
 tests/openai_compat/test_chat_completions.py
 tests/openai_compat/test_chat_completions_stream.py
+```
+
+Chat-Day12：
+
+```text
+tests/scripts/test_load_test.py
+scripts/load_test.py
+scripts/run_load_test.py
+benchmarks/configs/mock_baseline.json
 ```
 
 Chat-Day5 / Day6：
