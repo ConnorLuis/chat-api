@@ -1,0 +1,47 @@
+services:
+  chat-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: chat-api:v2-plus
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 20s
+
+    # The committed template makes `docker compose up --build` work on a
+    # clean clone. A local, Git-ignored .env overrides it when present.
+    env_file:
+      - path: .env.example
+        required: true
+      - path: .env
+        required: false
+
+    environment:
+      # Container paths are explicit and backed by named volumes below.
+      DATABASE_URL: sqlite:////app/data/chat_api.db
+      RUN_LOG_PATH: /app/runs/prompt_runs.jsonl
+      KB_DIR: /app/kb
+      KB_CHROMA_DIR: /app/kb/chroma
+      DOCS_DIR: /app/kb/docs
+      INDEX_FILE: /app/kb/docs.jsonl
+      PROMPTS_DIR: /app/prompts
+      PRICING_CATALOG_PATH: /app/config/pricing_catalog.json
+
+      # Do not reuse the host-process 127.0.0.1 default inside a container.
+      OLLAMA_BASE_URL: ${OLLAMA_DOCKER_BASE_URL:-http://host.docker.internal:11434}
+
+    ports:
+      - "${CHAT_API_PORT:-8000}:8000"
+
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    volumes:
+      - chat_api_data:/app/data
+      - chat_api_runs:/app/runs
+      - chat_api_kb:/app/kb
+
+volumes:
+  chat_api_data:
+  chat_api_runs:
+  chat_api_kb:

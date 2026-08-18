@@ -42,11 +42,56 @@ jobs:
 
       - name: Compile source without warnings
         run: |
-          python -W error -m compileall -q src scripts
+          python -W error -m compileall -q src scripts tests
 
       - name: Run tests
         env:
           EMBEDDING_PROVIDER: mock
           API_AUTH_ENABLED: "false"
+          REQUEST_RATE_LIMIT_ENABLED: "false"
+          TOKEN_QUOTA_ENABLED: "false"
         run: |
           pytest -q
+
+  docker-smoke:
+    name: Docker release smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Build and wait for healthy container
+        run: |
+          docker compose up \
+            --build \
+            --detach \
+            --wait \
+            --wait-timeout 180
+
+      - name: Verify native and OpenAI-compatible contracts
+        run: |
+          python scripts/docker_smoke_test.py \
+            --base-url http://127.0.0.1:8000 \
+            --wait-timeout-seconds 30
+
+      - name: Verify Docker health status
+        run: |
+          container_id="$(docker compose ps -q chat-api)"
+          test -n "${container_id}"
+          test "$(docker inspect \
+            --format='{{.State.Health.Status}}' \
+            "${container_id}")" = "healthy"
+
+      - name: Diagnostics and cleanup
+        if: always()
+        run: |
+          docker compose ps || true
+          docker compose logs \
+            --no-color \
+            --tail=200 \
+            chat-api || true
+          docker compose down \
+            --volumes \
+            --remove-orphans || true

@@ -1,6 +1,6 @@
-# HANDOFF — chat-api v2-plus（Chat-Day12 completed / mock baseline recorded）
+# HANDOFF — chat-api v2-plus（Chat-Day13 local passed / remote CI pending）
 
-> 新对话开场可直接粘贴：`chat-api 当前以 v2-langchain-rag-plus 为目标分支，定位为 production-oriented、单租户的 LLM Chat Gateway。Chat-Day1～Day12 已完成统一 Provider、OpenAI-compatible 同步/流式、Conversation/Message 持久化、上下文窗口、usage/cost、API Key 鉴权、请求限流、每日 token quota、Provider timeout/retry/fallback 与可观测性，以及可复现并发压测。Day12 实现提交 a23c92e 的 Python 3.10 严格验收为 303 passed、0 skipped、0 warnings，GitHub Actions run 32032592555 passed；三次 clean-commit mock baseline 共 3,960 个测量请求，除 native-sync-c50 的连接池耗尽外其余场景均为 0 错误。下一步只做 Docker、一键启动和最终发布文档。不要向 chat-api 增加 Agentic RAG、GraphRAG、Multi-Agent 或 MCP。`
+> 新对话开场可直接粘贴：`chat-api 当前以 v2-langchain-rag-plus 为目标分支，定位为 production-oriented、单租户的 LLM Chat Gateway。Chat-Day1～Day12 已完成多 Provider、OpenAI-compatible 同步/流式、会话持久化、usage/cost、鉴权限流、Provider resilience 与可复现压测。Chat-Day13 已完成固定 Python 3.10 的非 root 镜像、单 worker Uvicorn、启动时建库、SQLite/runs/KB 命名卷、/ready healthcheck、宿主机 Ollama 网络、一键启动、native/OpenAI 同步流式六链路 smoke test 和独立 Docker CI job；目标 WSL 的 Python 3.10 全量回归、容器 health、跨重建三卷持久化、六链路 smoke 和容器到 Windows Ollama 的真实连接均已通过。下一步只提交并确认 GitHub Actions 的 Python/Docker 两个 job，再把 Day13 标记 completed。不要增加 Agentic RAG、GraphRAG、Multi-Agent 或 MCP。`
 
 ## 1. 当前事实
 
@@ -23,10 +23,16 @@
 | Day12 Python 3.10 本地验收 | `303 passed in 18.38s`，compile/diff check passed |
 | Day12 实现提交 | `a23c92e feat(day12): add reproducible load testing` |
 | Day12 远端验收 | GitHub Actions run `32032592555`：passed |
+| Day12 最终文档提交 | `ff47733 docs(day12): record mock load-test baseline` |
+| Day12 最终 CI | GitHub Actions run `32034762231`：passed |
 | Day12 实测 | clean commit 上连续 3 次、8 场景、共 3,960 个测量请求 |
 | Day12 当前状态 | completed；mock baseline 已复核并记录 |
+| Day13 实现基线 | `ff47733` 上的 release candidate，尚未提交 |
+| Day13 辅助开发验收 | Python 3.12：`322 passed`；真实 Uvicorn 六链路 smoke passed |
+| Day13 目标环境验收 | Python 3.10.19：`322 passed in 18.24s`；Docker build/health/volumes/smoke/Ollama passed |
+| Day13 当前状态 | 本地验收 completed；实现 commit 与远端双 job CI pending |
 
-Day9B、Day11 与 Day12 均已通过各自本地严格验收和目标分支 GitHub Actions。Day12 文档中的性能数字来自上传的三次原始报告，不是生成值或单次最好结果。
+Day9B、Day11 与 Day12 均已通过各自本地严格验收和目标分支 GitHub Actions。Day13 本机容器验收已通过；只有 GitHub Actions `test` / `docker-smoke` 两个 job 都通过后才能最终标记 completed。
 
 ## 2. 项目定位与边界
 
@@ -41,7 +47,7 @@ Day9B、Day11 与 Day12 均已通过各自本地严格验收和目标分支 GitH
 
 `agent-api` 负责 Agentic RAG、GraphRAG、Multi-Agent、LangGraph 编排和 MCP。不要在 `chat-api` 重复实现这些能力。
 
-当前不再扩展 Prompt cache、多租户 RBAC、复杂 Agent Graph 等新范围。Provider resilience 和压测已完成，剩余工作只围绕 Docker、一键启动和最终发布质量。
+当前不再扩展 Prompt cache、多租户 RBAC、复杂 Agent Graph 等新范围。Day13 本地已通过，只允许修复远端 CI 发现的可复现问题，不再增加业务能力。
 
 ## 3. 已完成能力
 
@@ -117,6 +123,23 @@ Day9B、Day11 与 Day12 均已通过各自本地严格验收和目标分支 GitH
 - 除 `native-sync-c50` 外七个场景三次均为 0 错误；C50 合计 49/1,500（3.267%）失败；
 - 49 个失败全部是持久化阶段 SQLAlchemy QueuePool 耗尽导致的 HTTP 500，未混入 Provider/协议类错误；
 - 三次聚合表和性能边界解释已写入 README 的 `Mock baseline` 小节。
+
+### Chat-Day13：Docker 与发布收口（local passed / remote pending）
+
+- `Dockerfile`：固定 `python:3.10.19-slim-bookworm`，安装 core/LangChain/OpenAI runtime，不安装 dev 或 HF embedding 依赖；
+- 使用 uid/gid 10001 的非 root `app` 用户，镜像内预建并授权运行目录；
+- `scripts/docker-entrypoint.sh`：校验 data/runs/KB 可写，执行 `python -m src.app.db` 后用 `exec` 启动 Uvicorn；
+- Uvicorn 显式单 worker、无 reload、无 access log，与当前 SQLite 能力边界一致；
+- Dockerfile `HEALTHCHECK` 调用 `/ready`，同时验证 HTTP 与数据库连接；
+- `docker-compose.yml` 使用 `chat_api_data`、`chat_api_runs`、`chat_api_kb` 三个命名卷；
+- Compose 用容器绝对路径固定 SQLite、run log、Chroma、文档 index、prompt 和 pricing catalog；
+- `host.docker.internal:host-gateway` + `OLLAMA_DOCKER_BASE_URL` 解决容器访问 WSL/Linux/Windows 宿主机 Ollama；
+- `scripts/docker_start.sh` 一次完成 build、start、等待就绪和 smoke；
+- `scripts/docker_smoke_test.py` 使用 Python 标准库且禁用代理，验证 readiness、liveness、native sync/SSE、OpenAI-compatible sync/SSE；
+- 开启 API 鉴权时，smoke 仅从当前 shell 的 `CHAT_API_KEY` 读取明文 key，不落盘也不打印；
+- 新增 Docker artifact/smoke 单元测试；辅助开发环境全量结果为 `322 passed`；
+- CI 新增独立 `docker-smoke` job：真实 build、等待 healthy、执行六链路 smoke、检查 Docker health、最终清理临时卷；
+- 目标 WSL 已完成 Docker build、health、三卷持久化、重建后 smoke 和宿主 Ollama 真实连接；当前只待实现提交与远端双 job CI。
 
 ### v2 RAG 能力
 
@@ -207,6 +230,16 @@ OpenAI stream -> finish chunk 或 error event 的 gateway.provider_execution
 - `RATE_LIMIT_TRUST_PROXY_HEADERS=false` 是安全默认值；
 - 多 worker / 多实例下的分布式计数属于 Redis 等外部存储边界，当前项目不要声称已经解决该问题。
 
+### Docker release
+
+- 容器入口的 schema bootstrap 是开发/单机发布边界，不等同于 Alembic 生产迁移；
+- `/health` 是 liveness，Docker 使用 `/ready` 作为 healthcheck；
+- `docker compose down` 保留命名卷，`docker compose down --volumes` 会删除 SQLite、runs 和 KB；
+- 容器内 `127.0.0.1` 不是宿主机，Ollama 默认走 `http://host.docker.internal:11434`；
+- Ollama 不进入同一 Compose，避免把 API 生命周期与 GPU、模型权重和推理服务耦合；
+- 镜像不包含 `sentence-transformers` 或模型权重，真实 HF embedding 使用自定义镜像扩展；
+- 当前 SQLite 只发布单 worker；PostgreSQL、Alembic、Redis 和多实例是扩展路径，不在简历项目收口范围内。
+
 ## 5. 配置与依赖
 
 ### 依赖文件
@@ -224,7 +257,7 @@ OpenAI stream -> finish chunk 或 error event 的 gateway.provider_execution
 
 ### 环境变量
 
-以 `.env.example` 为完整模板。应用读取进程环境变量，不会自动加载 `.env`：
+以 `.env.example` 为完整模板。宿主机应用读取进程环境变量，不会自动加载 `.env`；Compose 会依次加载模板和可选本地 `.env`：
 
 ```bash
 cp .env.example .env
@@ -235,6 +268,8 @@ set -a && source .env && set +a
 
 ```dotenv
 APP_LOG_LEVEL=INFO
+CHAT_API_PORT=8000
+OLLAMA_DOCKER_BASE_URL=http://host.docker.internal:11434
 OLLAMA_BASE_URL=http://127.0.0.1:11434
 PROVIDER_RETRY_MAX_ATTEMPTS=2
 PROVIDER_RETRY_BASE_DELAY_MS=100
@@ -365,11 +400,44 @@ Day12 三次 mock baseline 均记录 `git_dirty=false`、commit `a23c92e`、Pyth
 
 关键解释：native sync 的吞吐量在 C10 达到本矩阵高点，C50 时吞吐回落且 tail latency/错误率显著恶化，因此过载拐点只能定位在 C10–C50，不能声称精确最大并发。C50 三次错误率分别为 0%、5.0%、4.8%；失败均为 `QueuePool limit of size 5 overflow 10 reached`，说明当前瓶颈是数据库连接池/持久化路径。流式 mock 的总延迟包含确定性的逐 token sleep，不代表真实模型推理速度。
 
+Day13 目标 WSL 本地发布验收：
+
+```text
+Python 3.10.19
+pip check -> No broken requirements found
+python -W error -m compileall -q src scripts tests -> passed
+pytest -q -> 322 passed in 18.24s
+shell syntax -> docker-entrypoint.sh / docker_start.sh passed
+git diff --check -> passed
+Docker Desktop 4.81.0 / Engine 29.6.1 / Compose v5.2.0
+Docker image build -> passed
+container runtime -> Python 3.10.19, uid/gid 10001(app)
+container pip check -> No broken requirements found
+Docker health -> healthy, failing streak 0
+named-volume mounts -> /app/data, /app/runs, /app/kb
+named-volume persistence across down/up -> 3/3 passed
+native/OpenAI sync/stream smoke before and after recreate -> 6/6 passed
+host.docker.internal -> 192.168.65.254
+container -> Windows Ollama /api/tags -> HTTP 200, qwen2.5:7b
+```
+
+远端验收前的提交命令：
+
+```bash
+git diff --check
+git add -A
+git diff --cached --check
+git status --short
+```
+
+本地结果已完整返回并记录。实现 commit hash 和 GitHub Actions run 尚未产生，不预填远端验收结果。
+
 ## 8. Git 提交边界
 
 应该提交：
 
 - `src/**`、`tests/**`、`scripts/**`；
+- `Dockerfile`、`.dockerignore`、`docker-compose.yml`；
 - `.github/workflows/ci.yml`；
 - `.gitignore`、`.env.example`、`pytest.ini`；
 - requirements / constraints；
@@ -398,8 +466,9 @@ git status --short
 
 Provider resilience 与 Day12 压测已完成，当前剩余项：
 
-1. Dockerfile、docker-compose 和最终一键启动；
-2. 最终发布 README、演示命令与面试数据整理。
+1. 提交 Day13 实现并推送 `v2-langchain-rag-plus`；
+2. 确认 GitHub Actions `test` 与 `docker-smoke` 两个 job；
+3. 将实际提交 hash 和 CI run 写入 README/HANDOFF，标记 Day13 completed。
 
 Alembic/PostgreSQL、多实例分布式 limiter/quota 和完整 metrics/tracing backend 属于未来演进边界，不作为本轮 chat-api 简历项目收口的必做项。大路由拆分也不是 Day11 遗留缺陷；只有后续改动确实受阻时，才允许做保持行为不变的独立重构。
 
@@ -411,12 +480,11 @@ Alembic/PostgreSQL、多实例分布式 limiter/quota 和完整 metrics/tracing 
 - README/HANDOFF 已记录实际请求数、并发度、RPS、P50/P95、错误率、TTFT 和连接池瓶颈；
 - Ollama 真实模型基准是可选加分项，只有注明 CPU/GPU、显存、模型 tag 和量化精度后才可引用，不阻塞收口。
 
-### Chat-Day13：Docker 与发布收口
+### Chat-Day13：Docker 与发布收口（local passed / remote pending）
 
-- Dockerfile、docker-compose 和健康检查；
-- 一键启动、环境变量、持久化卷与 Ollama 连接说明；
-- 最终 README、演示脚本和面试讲解口径；
-- 完整本地验收与目标分支 GitHub Actions。
+- 实现和目标 WSL 本地验收已完成，禁止继续扩展业务范围；
+- 下一动作是提交 `chore(day13): add docker release packaging` 并推送目标分支；
+- 远端双 job 通过后再做一次很小的最终状态文档提交。
 
 ## 11. 关键提交
 
@@ -435,8 +503,9 @@ e8e0ab3 feat(day10): account OpenAI-compatible streaming usage
 5b09bd8 docs(day9b): record final remote acceptance
 39ad9d4 feat(day11): add provider resilience and observability
 a23c92e feat(day12): add reproducible load testing
+ff47733 docs(day12): record mock load-test baseline
 ```
 
 Day9B cleanup implementation commit：`09a2222 chore(day9b): close repository and CI hygiene`。
 
-Day12 三次报告已复核。当前 README/HANDOFF 结果记录建议使用独立提交标题：`docs(day12): record mock load-test baseline`。
+Day13 本地验收版当前基于 `ff47733`，最终实现 commit 和 GitHub Actions run 尚未产生，不要预填 hash 或伪造远端验收结果。

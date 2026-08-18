@@ -1,7 +1,7 @@
 # chat-api
 
 <!-- LLM_GATEWAY_PLUS_START -->
-## v2-plus 当前状态（Chat-Day12 completed / mock baseline recorded）
+## v2-plus 当前状态（Chat-Day13 local passed / remote CI pending）
 
 - 目标分支：`v2-langchain-rag-plus`
 - Day9B 收口提交：`09a2222 chore(day9b): close repository and CI hygiene`
@@ -16,6 +16,7 @@
 - Chat-Day10：用户/IP 请求限流、可信代理开关、caller-aware 每日 token quota，以及原生和 OpenAI-compatible 同步/流式 usage 结算
 - Chat-Day11：统一 Provider 错误分类、显式 timeout、指数退避 retry、可选 fallback、流式首 token 边界，以及原生/OpenAI-compatible 可观测字段
 - Chat-Day12：可复现并发压测器、固定场景矩阵、逐请求原始样本和自动报告；已完成三次 clean-commit mock baseline，并记录吞吐量、P50/P95/P99、错误率和流式 TTFT
+- Chat-Day13（本地验收已通过）：非 root Python 3.10 镜像、Compose 命名卷、数据库 readiness 健康检查、宿主机 Ollama 网络、一键启动、六链路 smoke test 和独立 Docker CI job
 
 ### Chat-Day9B 收口
 
@@ -29,16 +30,22 @@
 - 取消 Git 对 Chroma、KB 文档和 SQLite 运行产物的跟踪
 - 提供完整 `.env.example`，并整理 `.gitignore`
 
-### 当前严格验收（Day12）
+### 当前严格验收（Day13 本地）
 
 ```text
 Python 3.10.19
 pip check -> No broken requirements found
 python -W error -m compileall -q src scripts tests -> passed
-pytest -q -> 303 passed in 18.38s
+pytest -q -> 322 passed in 18.24s
 skipped -> 0
 warnings -> 0
 git diff --check -> passed
+Docker image build -> passed
+container runtime -> Python 3.10.19, uid/gid 10001(app)
+Docker health -> healthy, failing streak 0
+named-volume persistence across down/up -> 3/3 passed
+native/OpenAI sync/stream smoke -> 6/6 passed
+container -> host Ollama /api/tags -> HTTP 200, qwen2.5:7b
 ```
 
 Chat-Day9B 与 Chat-Day11 已通过本地和目标分支远端验收。Day12 实现提交 `a23c92e feat(day12): add reproducible load testing` 已通过本地严格验收和 GitHub Actions run `32032592555`；三次报告均来自该 clean commit、Python 3.10.19、单 worker、隔离 SQLite 和 MockProvider。
@@ -47,11 +54,11 @@ Chat-Day9B 与 Chat-Day11 已通过本地和目标分支远端验收。Day12 实
 
 ### 项目边界
 
-`agent-api` 负责 Agentic RAG、GraphRAG、Multi-Agent 和 MCP。`chat-api` 不继续增加 Agent 编排能力，后续只完成 Docker、一键启动和最终发布文档。
+`agent-api` 负责 Agentic RAG、GraphRAG、Multi-Agent 和 MCP。`chat-api` 不继续增加 Agent 编排能力；Day13 本地验收已完成，当前只做提交与远端 CI 收口，不再增加新功能。
 
 ### 下一步
 
-Chat-Day13：补齐 Dockerfile、Compose、健康检查、持久化卷和 Ollama 连接说明，完成一键启动及最终发布/面试文档。真实 Ollama 基准属于可选加分项，必须注明硬件、模型 tag 和量化精度，不阻塞 chat-api 收口。
+提交 Day13 发布收口实现并推送 `v2-langchain-rag-plus`；以 GitHub Actions 的 Python `test` 与 `docker-smoke` 两个 job 完成远端验收，然后回填实际 commit/run 并将 Chat-Day13 标记 completed。
 <!-- LLM_GATEWAY_PLUS_END -->
 
 
@@ -80,6 +87,7 @@ Chat-Day13：补齐 Dockerfile、Compose、健康检查、持久化卷和 Ollama
 * Provider resilience：timeout、retry、exponential backoff、opt-in fallback；流式只允许在首个非空 token 前重试或切换
 * Provider observability：原生接口使用 `provider_execution`，OpenAI-compatible 接口使用 `gateway.provider_execution`，记录尝试链、最终 Provider、重试数和 fallback 状态
 * Reproducible load testing：固定 JSON 场景矩阵，覆盖原生/OpenAI-compatible 同步与流式路径，输出 req/s、P50/P95/P99、错误率、TTFT 和逐请求样本
+* Containerized release：固定 Python 3.10、非 root 运行、单 worker、启动时幂等建库、readiness healthcheck、SQLite/runs/KB 命名卷和 CI 级 HTTP smoke test
 * RAG：KB 入库/检索、同步/流式上下文注入、citations 溯源
 * RAG backend abstraction：`RAG_BACKEND=native|langchain`；`/chat` 与 `/chat/stream` 已统一通过 backend 构建 RAG 上下文，LangChain backend 已支持真实检索，并暴露 RAG observability timing
 * Hybrid RAG：vector retrieval + lexical scoring + fusion rerank，并在 `metadata.rag` / SSE `rag` 中暴露 retrieval_mode/fusion/weights
@@ -96,6 +104,7 @@ Chat-Day13：补齐 Dockerfile、Compose、健康检查、持久化卷和 Ollama
 * Python 3.10+
 * 推荐：WSL2 Ubuntu + conda
 * 可选：Windows 安装 Ollama（用于本地大模型）
+* 容器运行：Docker Engine / Docker Desktop + Docker Compose v2.24+
 
 ---
 
@@ -193,8 +202,129 @@ curl http://localhost:8000/health
 
 ---
 
+## Docker Release (Chat-Day13)
+
+Day13 将项目收口为可复现的单机发布单元。镜像固定 Python 3.10.19，安装 core、LangChain 和 OpenAI runtime，不安装测试依赖；进程使用非 root 用户，启动脚本先检查持久化运行目录的写权限，再通过 `python -m src.app.db` 幂等初始化 schema，最后以单 worker Uvicorn 启动。单 worker 是与当前 SQLite 能力边界一致的显式选择，不伪装成已经支持多实例水平扩展。
+
+### 一键启动与 smoke test
+
+在仓库根目录执行：
+
+```bash
+bash scripts/docker_start.sh
+```
+
+脚本会完成 build、后台启动、等待 readiness，并依次验证：
+
+```text
+GET  /ready
+GET  /health
+POST /chat
+POST /chat/stream
+POST /v1/chat/completions
+POST /v1/chat/completions stream=true
+```
+
+其中两个流式检查不仅要求 HTTP 2xx，还要求 native SSE 以 `meta -> token* -> usage -> done` 正常结束、OpenAI-compatible SSE 以 `[DONE]` 结束；`event:error`、空 token 流或缺失终止事件都会使脚本非零退出。
+
+如果本地 `.env` 开启了 `API_AUTH_ENABLED=true`，运行 smoke 前需在当前 shell 额外执行 `export CHAT_API_KEY='<已创建的明文 key>'`。smoke 脚本会通过 `X-API-Key` 发送它，不会将 key 写入报告或日志。
+
+等价的分步命令：
+
+```bash
+docker compose up --build --detach
+python scripts/docker_smoke_test.py \
+  --base-url http://127.0.0.1:8000
+docker compose ps
+```
+
+停止服务但保留数据：
+
+```bash
+docker compose down
+```
+
+只有确认不再需要本地数据库、运行日志和 KB 后，才执行以下破坏性命令：
+
+```bash
+docker compose down --volumes
+```
+
+### 持久化边界
+
+| Compose volume | 容器路径 | 内容 |
+|---|---|---|
+| `chat_api_data` | `/app/data` | SQLite `chat_api.db` |
+| `chat_api_runs` | `/app/runs` | Prompt/compare JSONL 运行日志 |
+| `chat_api_kb` | `/app/kb` | Chroma、入库文档和 KB index |
+
+命名卷不会因 `docker compose down` 删除，也不会进入 Git 或 Docker build context。Compose 将数据库 URL、run log、KB、prompt 和 pricing 路径固定为容器绝对路径，避免工作目录变化造成数据落到错误位置。
+
+### 健康检查
+
+Dockerfile 的 `HEALTHCHECK` 调用公开 `/ready`，同时覆盖 HTTP 进程和数据库连接；`/health` 只表示进程存活。查看状态和日志：
+
+```bash
+docker compose ps
+docker compose logs --tail=200 chat-api
+```
+
+GitHub Actions 除 Python 3.10 全量测试外，还会真实构建 Compose 镜像、等待容器变为 `healthy`、执行同一六链路 smoke test，并在结束后删除 CI 临时卷。
+
+### 容器访问宿主机 Ollama
+
+容器内的 `127.0.0.1` 指向容器自身，不能沿用宿主机进程的 `OLLAMA_BASE_URL=http://127.0.0.1:11434`。Compose 默认设置：
+
+```dotenv
+OLLAMA_DOCKER_BASE_URL=http://host.docker.internal:11434
+```
+
+并使用：
+
+```yaml
+extra_hosts:
+  - "host.docker.internal:host-gateway"
+```
+
+Docker Desktop 会提供 `host.docker.internal`；Linux Docker Engine 通过 `host-gateway` 将它解析到默认 bridge 的宿主机地址。该做法与 [Docker Compose networking](https://docs.docker.com/compose/how-tos/networking/) 的官方配置一致。
+
+验证容器能看到宿主机 Ollama：
+
+```bash
+docker compose exec chat-api python -c \
+  "import urllib.request; print(urllib.request.urlopen('http://host.docker.internal:11434/api/tags', timeout=5).read().decode())"
+```
+
+如果返回 connection refused，先在宿主机确认 Ollama 已运行。Ollama 默认只绑定 `127.0.0.1:11434`；原生 Linux bridge 或部分 WSL 网络下需要按 [Ollama FAQ](https://docs.ollama.com/faq) 将宿主机 `OLLAMA_HOST` 设置为可被容器访问的监听地址，例如 `0.0.0.0:11434`，重启 Ollama，并通过防火墙限制为可信本机网络。也可以在本地 `.env` 中把 `OLLAMA_DOCKER_BASE_URL` 改为实际可达的 Windows/WSL 网关地址。
+
+### Day13 本地发布验收
+
+2026-08-18 在 WSL2 + Docker Desktop 目标环境完成实测：
+
+| 验收项 | 实测结果 |
+|---|---|
+| 宿主 Python | `3.10.19`，`pip check` 通过，`322 passed in 18.24s` |
+| Docker 环境 | Docker Desktop `4.81.0`，Engine `29.6.1`，Compose `v5.2.0` |
+| 镜像与身份 | `chat-api:v2-plus` 构建通过；容器 Python `3.10.19`；`uid=10001(app)` |
+| 健康检查 | `/ready` 连续成功，状态 `healthy`，`FailingStreak=0` |
+| 持久化 | `/app/data`、`/app/runs`、`/app/kb` 三个命名卷挂载正确，`down/up` 后 3/3 marker 保留 |
+| 协议 smoke | 首次启动和容器重建后均为 6/6 passed |
+| 宿主机 Ollama | `host.docker.internal -> 192.168.65.254`；`/api/tags` HTTP 200；发现 `qwen2.5:7b` |
+
+上述结果完成了本地发布验收；尚未生成 Day13 实现 commit 和远端 GitHub Actions run，因此在两个远端 job 通过前不把整个 Day13 标记为 completed。
+
+### 镜像范围与面试口径
+
+基础镜像包含 Native RAG、LangChain Chroma 和 OpenAI SDK；真实 Hugging Face embedding 依赖 `sentence-transformers`，体积较大，仍作为自定义镜像的可选扩展，不把模型权重打进通用 API 镜像。Ollama 也不与 API 强行编排在同一个 Compose 中，从而让 GPU/模型生命周期独立于 Gateway。
+
+面试时可以概括为：项目不是“写了一个 Dockerfile”，而是明确了启动初始化、非 root 权限、健康/就绪语义、持久化边界、宿主机模型网络和协议级 smoke contract；同时根据 Day12 的 C50 连接池瓶颈保持 SQLite 单 worker，并把 PostgreSQL、多实例和分布式限流作为真实扩展路径。
+
+---
+
 ## Environment variables
 
+* `CHAT_API_PORT` (Docker Compose default: `8000`)：宿主机发布端口
+* `OLLAMA_DOCKER_BASE_URL` (Docker Compose default: `http://host.docker.internal:11434`)：容器访问宿主机 Ollama 的地址
 * `APP_LOG_LEVEL` (default: `INFO`)：应用请求日志级别；正式压测固定为 `WARNING`
 * `OLLAMA_BASE_URL` (default: `http://127.0.0.1:11434`)
 * `OLLAMA_MODEL` (default: `qwen2.5:7b`)
