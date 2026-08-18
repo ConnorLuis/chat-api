@@ -1,721 +1,234 @@
 # chat-api
 
-<!-- LLM_GATEWAY_PLUS_START -->
-## v2-plus 当前状态（Chat-Day13 completed / v2-plus closed）
+一个面向生产工程实践的 **FastAPI LLM Chat Gateway**。项目聚焦单租户聊天网关的核心工程能力：统一 Provider、OpenAI-compatible API、Conversation 持久化、RAG、Provider resilience、Usage/Cost、API Key、限流与 token quota、可复现并发压测，以及 Docker/CI 发布闭环。
 
-- 目标分支：`v2-langchain-rag-plus`
-- Day9B 收口提交：`09a2222 chore(day9b): close repository and CI hygiene`
-- 项目定位：production-oriented、单租户的 LLM Chat Gateway
+> 当前状态：`v2-langchain-rag-plus` 已完成代码、测试、性能基线和 Docker 发布验收；功能范围已冻结。合并 `master` 与 release tag 仅属于仓库发布操作，不再新增业务能力。
 
-### 已完成能力
+## 1. Core capabilities
 
-- Chat-Day1～Day6：统一 Provider、OpenAI-compatible sync/stream、Conversation / Message 持久化、多会话历史和 token budget 截断
-- Chat-Day7：UsageRecord、统一 token accounting，以及成功、Provider 失败、客户端断开和持久化失败状态
-- Chat-Day8：版本化价格目录、Decimal 成本估算、UsageCost 快照和 usage reporting API
-- Chat-Day9：API Key 一次性明文创建、HMAC-SHA256 + server pepper、active/revoked、Bearer / `X-API-Key`、CallerIdentity 和路由保护
-- Chat-Day10：用户/IP 请求限流、可信代理开关、caller-aware 每日 token quota，以及原生和 OpenAI-compatible 同步/流式 usage 结算
-- Chat-Day11：统一 Provider 错误分类、显式 timeout、指数退避 retry、可选 fallback、流式首 token 边界，以及原生/OpenAI-compatible 可观测字段
-- Chat-Day12：可复现并发压测器、固定场景矩阵、逐请求原始样本和自动报告；已完成三次 clean-commit mock baseline，并记录吞吐量、P50/P95/P99、错误率和流式 TTFT
-- Chat-Day13：非 root Python 3.10 镜像、Compose 命名卷、数据库 readiness 健康检查、宿主机 Ollama 网络、一键启动、六链路 smoke test 和独立 Docker CI job；本地与远端发布验收均已通过
+| Area | Capability |
+|---|---|
+| Chat API | Native `/chat`、SSE `/chat/stream` |
+| OpenAI compatibility | `/v1/chat/completions` sync/stream |
+| Provider abstraction | Mock / Ollama / OpenAI |
+| Conversation | Conversation / Message 持久化、多会话历史、分页查询 |
+| Context window | 最近轮次 + token budget 截断，保留当前问题 |
+| RAG | Native / LangChain backend、Hybrid retrieval、citations、KB 管理 |
+| Resilience | timeout、retry、exponential backoff、opt-in fallback |
+| Streaming safety | 仅首个非空 token 前允许 retry/fallback，输出后禁止重放 |
+| Usage | request-level token accounting |
+| Cost | 版本化价格目录、Decimal 估算、不可变 UsageCost 快照 |
+| Authentication | API Key、Bearer / `X-API-Key`、HMAC-SHA256 + server pepper |
+| Limits | caller/IP request rate limit、caller-aware daily token quota |
+| Observability | trace id、latency、provider execution chain、RAG timing |
+| Load testing | native/OpenAI-compatible sync/stream、RPS、P50/P95/P99、TTFT |
+| Release | Python 3.10、non-root Docker、Compose named volumes、healthcheck、CI smoke |
 
-### Chat-Day9B 收口
+## 2. Architecture
 
-- 使用 `constraints.txt` 固定核心、测试和可选集成依赖版本
-- CI 安装 LangChain/OpenAI 可选依赖，执行 `pip check`、warnings-as-errors 编译和完整测试
-- pytest 将 warning 视为 error；core-only 环境中的 optional skip 带有明确原因
-- Ollama 默认地址统一为 `http://127.0.0.1:11434`
-- embedding 默认值改为可移植 Hugging Face 模型 ID
-- 修复 HF embedding 初始化和 timezone-aware UTC 时间
-- 删除无调用方的旧 `src/app/llm/engines/`
-- 取消 Git 对 Chroma、KB 文档和 SQLite 运行产物的跟踪
-- 提供完整 `.env.example`，并整理 `.gitignore`
+```mermaid
+flowchart LR
+    Client[Client / OpenAI SDK] --> API[FastAPI Gateway]
 
-### 当前严格验收（Day13 最终）
+    API --> MW[Trace / Auth / Rate Limit / Token Quota]
+    MW --> Native[Native Chat API]
+    MW --> Compat[OpenAI-compatible API]
 
-```text
-Python 3.10.19
-pip check -> No broken requirements found
-python -W error -m compileall -q src scripts tests -> passed
-pytest -q -> 322 passed in 18.24s
-skipped -> 0
-warnings -> 0
-git diff --check -> passed
-Docker image build -> passed
-container runtime -> Python 3.10.19, uid/gid 10001(app)
-Docker health -> healthy, failing streak 0
-named-volume persistence across down/up -> 3/3 passed
-native/OpenAI sync/stream smoke -> 6/6 passed
-container -> host Ollama /api/tags -> HTTP 200, qwen2.5:7b
-Day13 implementation -> 5c75a35 chore(day13): add docker release packaging
-GitHub Actions run 32107582238 -> passed
-remote Python job 95620047535 -> 322 passed in 17.65s
-remote Docker job 95620047554 -> healthy, protocol smoke 6/6 passed
+    Native --> Context[Conversation + Context Window]
+    Compat --> Context
+
+    Context --> RAG[RAG Backend\nNative / LangChain / Hybrid]
+    Context --> Exec[Provider Execution]
+
+    RAG --> KB[Chroma + KB Documents]
+    RAG --> Exec
+
+    Exec --> Retry[Timeout / Retry / Fallback]
+    Retry --> Mock[MockProvider]
+    Retry --> Ollama[OllamaProvider]
+    Retry --> OpenAI[OpenAIProvider]
+
+    Native --> Usage[Usage / Cost Accounting]
+    Compat --> Usage
+    Usage --> DB[(SQLite)]
+
+    Context --> DB
+    API --> DB
 ```
 
-Chat-Day9B 与 Chat-Day11 已通过本地和目标分支远端验收。Day12 实现提交 `a23c92e feat(day12): add reproducible load testing` 已通过本地严格验收和 GitHub Actions run `32032592555`；三次报告均来自该 clean commit、Python 3.10.19、单 worker、隔离 SQLite 和 MockProvider。
+项目定位是 **production-oriented**，不是“完全 production-ready”。当前发布单元明确采用单 worker + SQLite，保留真实并发边界，不把单机测试结果包装成水平扩展能力。
 
-Day13 实现提交 [`5c75a35 chore(day13): add docker release packaging`](https://github.com/ConnorLuis/chat-api/commit/5c75a3516d1b1fc6a0f5b50fc74925be58d609d6) 已通过目标 WSL 本地发布验收和 [GitHub Actions run `32107582238`](https://github.com/ConnorLuis/chat-api/actions/runs/32107582238)。远端 Python 3.10 全量测试与 Docker release smoke 两个独立 job 均通过，Chat-Day13 与 v2-plus 发布收口完成。
+## 3. Quick start
 
-三次共执行 3,960 个测量请求，整体错误率为 49/3,960（1.237%）。除 `native-sync-c50` 外，其余七个场景三次均为 0 错误；C50 三次错误率为 0%、5.0%、4.8%，合计 49/1,500（3.267%）。49 个失败全部为持久化阶段 SQLAlchemy 连接池耗尽导致的 HTTP 500，明确暴露了单 worker + 当前 SQLite/QueuePool 配置的高并发边界，而非模型推理失败。
+### 3.1 Docker（推荐）
 
-### 项目边界
+要求：
 
-`agent-api` 负责 Agentic RAG、GraphRAG、Multi-Agent 和 MCP。`chat-api` 的 v2-plus 功能开发与发布收口已经完成，不继续增加 Agent 编排或其他新业务能力；后续只做面试复习、演示和必要维护。
+- Docker Engine / Docker Desktop
+- Docker Compose v2.24+
 
-### 下一步
+启动：
 
-Chat-Day13 已完成，`chat-api` v2-plus 正式收口。下一阶段以复习系统设计、演练项目讲解和维护可复现 demo 为主，不再安排新的 Chat-Day 开发任务。
-<!-- LLM_GATEWAY_PLUS_END -->
+```bash
+git clone https://github.com/ConnorLuis/chat-api.git
+cd chat-api
 
+git switch v2-langchain-rag-plus
 
-一个面向生产工程实践的 FastAPI LLM Chat Gateway，支持：
+docker compose up --build --detach
+docker compose ps
+```
 
-* `GET /health`：liveness 健康检查
-* `GET /ready`：数据库 readiness 检查
-* `GET /auth/whoami`：返回当前 CallerIdentity
-* `POST /chat`：同步聊天（`provider=mock|ollama|openai`），支持请求级 `model` override，返回 `metadata`
-* `POST /chat/stream`：SSE 流式聊天（`provider=mock|ollama|openai`），事件：`meta/token/usage/done/error`
-* `POST /prompt/compare`：通过统一 Provider 层执行 Prompt A/B Compare
-* `POST /v1/chat/completions`：OpenAI-compatible Chat Completions，支持非流式 `chat.completion` 与流式 `chat.completion.chunk`，并支持网关 `provider` override
-* Conversation persistence：SQLAlchemy 2.x、SQLite、Conversation / Message、repository/service、稳定消息顺序与隔离测试
-* Multi-conversation history：`conversation_id`、历史加载、最近 N 轮 / token budget 截断
-* Conversation API：创建、列表、查询、重命名、删除与消息分页查询
-* Persistence semantics：同步/流式仅在完整成功后原子保存本轮 user/assistant；失败或客户端断开不保存半轮消息
-* Token usage accounting：独立 `UsageRecord` 记录请求级 token、状态、来源、trace/conversation/provider/model/latency；不写入 Message
-* Cost estimation：版本化 `pricing_catalog.json`、Decimal 精度、独立 `UsageCost` 历史快照，区分 `estimated|unknown_price|usage_unavailable`
-* Usage reporting API：`/usage/pricing|records|summary|daily|providers|models`，支持时间范围、状态、Provider/Model、分页与多币种分组
-* API Key authentication：明文只在创建时返回一次，数据库仅存 prefix、HMAC hash 与 metadata；支持 active/revoked、Bearer、X-API-Key 和 CallerIdentity
-* Request rate limit：支持用户/API Key 与 IP 维度的请求限制，并默认不信任代理转发头
-* Daily token quota：按 caller 统计每日 token，覆盖原生与 OpenAI-compatible 同步/流式路径
-* 全局中间件：`x-trace-id` + latency 日志
-* 统一 ChatProvider：MockProvider / OllamaProvider / OpenAIProvider
-* ProviderFactory：屏蔽不同模型服务调用差异，OpenAI SDK 按需懒加载
-* Provider resilience：timeout、retry、exponential backoff、opt-in fallback；流式只允许在首个非空 token 前重试或切换
-* Provider observability：原生接口使用 `provider_execution`，OpenAI-compatible 接口使用 `gateway.provider_execution`，记录尝试链、最终 Provider、重试数和 fallback 状态
-* Reproducible load testing：固定 JSON 场景矩阵，覆盖原生/OpenAI-compatible 同步与流式路径，输出 req/s、P50/P95/P99、错误率、TTFT 和逐请求样本
-* Containerized release：固定 Python 3.10、非 root 运行、单 worker、启动时幂等建库、readiness healthcheck、SQLite/runs/KB 命名卷和 CI 级 HTTP smoke test
-* RAG：KB 入库/检索、同步/流式上下文注入、citations 溯源
-* RAG backend abstraction：`RAG_BACKEND=native|langchain`；`/chat` 与 `/chat/stream` 已统一通过 backend 构建 RAG 上下文，LangChain backend 已支持真实检索，并暴露 RAG observability timing
-* Hybrid RAG：vector retrieval + lexical scoring + fusion rerank，并在 `metadata.rag` / SSE `rag` 中暴露 retrieval_mode/fusion/weights
-* KB 管理：文档列表、软删除 tombstone、Chroma 向量清理
-* RAG 评测：QA20 离线评测、answer/citation/effective_rag/latency 指标
-* RAG eval workflow：`seed_kb.py` + `run_rag_eval_workflow.py`，支持可复现 seed/eval/report strict gate
-* v2 收口文档：`docs/system_design.md`、`docs/v2_demo_guide.md`、`docs/interview_talk_track.md`
-* pytest：基础回归 + SSE 契约测试 + 错误契约测试
+默认 Compose：
 
----
+- 使用 `chat-api:v2-plus`
+- 固定容器内 SQLite、runs、KB 路径
+- 使用 3 个 named volumes 持久化数据
+- 通过 `host.docker.internal` 访问宿主机 Ollama
+- 暴露 `${CHAT_API_PORT:-8000}:8000`
 
-## Requirements
+健康检查：
 
-* Python 3.10+
-* 推荐：WSL2 Ubuntu + conda
-* 可选：Windows 安装 Ollama（用于本地大模型）
-* 容器运行：Docker Engine / Docker Desktop + Docker Compose v2.24+
+```bash
+curl http://127.0.0.1:8000/health
+curl http://127.0.0.1:8000/ready
+```
 
----
+完整协议 smoke：
 
-## Quick Start
+```bash
+python scripts/docker_smoke_test.py
+```
 
-### 1) Activate env & install deps
+或使用一键脚本：
 
-核心运行环境：
+```bash
+bash scripts/docker_start.sh
+```
+
+停止容器：
+
+```bash
+docker compose down
+```
+
+named volumes 默认保留。只有明确需要删除持久化数据时才使用 `docker compose down -v`。
+
+### 3.2 Local Python
+
+要求 Python 3.10+。
 
 ```bash
 conda activate chatapi
-python -m pip install -r requirements.txt
-```
 
-本地开发与完整测试：
-
-```bash
 python -m pip install \
+  -r requirements.txt \
   -r requirements-dev.txt \
   -r requirements-langchain.txt \
   -r requirements-openai.txt
-```
 
-`constraints.txt` 固定直接依赖和兼容性关键依赖版本。升级版本时必须同时执行 `pip check`、warnings-as-errors 编译和完整测试。
-
-复制环境变量模板；应用不会自动加载 `.env`：
-
-```bash
 cp .env.example .env
 set -a && source .env && set +a
+
+python -m src.app.db
+
+python -m uvicorn src.app.main:app \
+  --host 127.0.0.1 \
+  --port 8000
 ```
 
-### Optional: LangChain backend dependencies (Day24 / v2)
+`constraints.txt` 固定核心和兼容性关键依赖。依赖升级后应重新执行 `pip check`、warnings-as-errors compile 和完整测试。
 
-Day24 新增可插拔 RAG backend skeleton。默认仍使用 native backend；如果后续要启用 LangChain backend，再单独安装：
+### 3.3 Optional dependencies
+
+LangChain RAG backend：
 
 ```bash
 python -m pip install -r requirements-langchain.txt
 ```
 
-当前可选依赖文件：
-
-```text
-requirements-langchain.txt
-```
-
-包含：
-
-```text
-langchain-core
-langchain-chroma
-```
-
-项目没有直接使用高层 `langchain` 或 `langchain-ollama` 包。主 `requirements.txt` 不安装 LangChain；完整 CI 会显式安装 `requirements-langchain.txt`，因此 LangChain contract/observability 测试不会被跳过。
-
-### Optional: OpenAI Provider / SDK dependencies (Chat-Day2–Chat-Day4)
-
-OpenAI / OpenAI-compatible Provider 使用可选依赖：
+OpenAI Provider：
 
 ```bash
 python -m pip install -r requirements-openai.txt
 ```
 
-当前可选依赖文件：
-
-```text
-requirements-openai.txt
-```
-
-`openai` SDK 在 `OpenAIProvider` 真正执行请求时才懒加载，因此核心运行环境、MockProvider 和 OllamaProvider 不依赖 OpenAI SDK。完整 CI 会安装该文件并覆盖 OpenAI-compatible contract。
-
-### Optional: real Hugging Face embeddings
-
-测试和 CI 默认使用 deterministic mock embedding。真实语义 embedding 按需安装：
+真实 Hugging Face embedding：
 
 ```bash
 python -m pip install -r requirements-embeddings.txt
 export EMBEDDING_PROVIDER=hf
 ```
 
-默认模型 ID 为 `maidalun1020/bce-embedding-base_v1`；也可以通过 `EMBEDDING_MODEL` 指向本地路径。
-
-### 2) Run server
-
-```bash
-cd ~/projects/chat-api
-python -m uvicorn src.app.main:app --reload --port 8000
-```
-
-### 3) Health check
-
-```bash
-curl http://localhost:8000/health
-```
-
----
-
-## Docker Release (Chat-Day13)
-
-Day13 将项目收口为可复现的单机发布单元。镜像固定 Python 3.10.19，安装 core、LangChain 和 OpenAI runtime，不安装测试依赖；进程使用非 root 用户，启动脚本先检查持久化运行目录的写权限，再通过 `python -m src.app.db` 幂等初始化 schema，最后以单 worker Uvicorn 启动。单 worker 是与当前 SQLite 能力边界一致的显式选择，不伪装成已经支持多实例水平扩展。
-
-### 一键启动与 smoke test
-
-在仓库根目录执行：
-
-```bash
-bash scripts/docker_start.sh
-```
-
-脚本会完成 build、后台启动、等待 readiness，并依次验证：
+默认 embedding 模型 ID：
 
 ```text
-GET  /ready
-GET  /health
-POST /chat
-POST /chat/stream
-POST /v1/chat/completions
-POST /v1/chat/completions stream=true
+maidalun1020/bce-embedding-base_v1
 ```
 
-其中两个流式检查不仅要求 HTTP 2xx，还要求 native SSE 以 `meta -> token* -> usage -> done` 正常结束、OpenAI-compatible SSE 以 `[DONE]` 结束；`event:error`、空 token 流或缺失终止事件都会使脚本非零退出。
+## 4. API overview
 
-如果本地 `.env` 开启了 `API_AUTH_ENABLED=true`，运行 smoke 前需在当前 shell 额外执行 `export CHAT_API_KEY='<已创建的明文 key>'`。smoke 脚本会通过 `X-API-Key` 发送它，不会将 key 写入报告或日志。
-
-等价的分步命令：
-
-```bash
-docker compose up --build --detach
-python scripts/docker_smoke_test.py \
-  --base-url http://127.0.0.1:8000
-docker compose ps
-```
-
-停止服务但保留数据：
-
-```bash
-docker compose down
-```
-
-只有确认不再需要本地数据库、运行日志和 KB 后，才执行以下破坏性命令：
-
-```bash
-docker compose down --volumes
-```
-
-### 持久化边界
-
-| Compose volume | 容器路径 | 内容 |
-|---|---|---|
-| `chat_api_data` | `/app/data` | SQLite `chat_api.db` |
-| `chat_api_runs` | `/app/runs` | Prompt/compare JSONL 运行日志 |
-| `chat_api_kb` | `/app/kb` | Chroma、入库文档和 KB index |
-
-命名卷不会因 `docker compose down` 删除，也不会进入 Git 或 Docker build context。Compose 将数据库 URL、run log、KB、prompt 和 pricing 路径固定为容器绝对路径，避免工作目录变化造成数据落到错误位置。
-
-### 健康检查
-
-Dockerfile 的 `HEALTHCHECK` 调用公开 `/ready`，同时覆盖 HTTP 进程和数据库连接；`/health` 只表示进程存活。查看状态和日志：
-
-```bash
-docker compose ps
-docker compose logs --tail=200 chat-api
-```
-
-GitHub Actions 除 Python 3.10 全量测试外，还会真实构建 Compose 镜像、等待容器变为 `healthy`、执行同一六链路 smoke test，并在结束后删除 CI 临时卷。
-
-### 容器访问宿主机 Ollama
-
-容器内的 `127.0.0.1` 指向容器自身，不能沿用宿主机进程的 `OLLAMA_BASE_URL=http://127.0.0.1:11434`。Compose 默认设置：
-
-```dotenv
-OLLAMA_DOCKER_BASE_URL=http://host.docker.internal:11434
-```
-
-并使用：
-
-```yaml
-extra_hosts:
-  - "host.docker.internal:host-gateway"
-```
-
-Docker Desktop 会提供 `host.docker.internal`；Linux Docker Engine 通过 `host-gateway` 将它解析到默认 bridge 的宿主机地址。该做法与 [Docker Compose networking](https://docs.docker.com/compose/how-tos/networking/) 的官方配置一致。
-
-验证容器能看到宿主机 Ollama：
-
-```bash
-docker compose exec chat-api python -c \
-  "import urllib.request; print(urllib.request.urlopen('http://host.docker.internal:11434/api/tags', timeout=5).read().decode())"
-```
-
-如果返回 connection refused，先在宿主机确认 Ollama 已运行。Ollama 默认只绑定 `127.0.0.1:11434`；原生 Linux bridge 或部分 WSL 网络下需要按 [Ollama FAQ](https://docs.ollama.com/faq) 将宿主机 `OLLAMA_HOST` 设置为可被容器访问的监听地址，例如 `0.0.0.0:11434`，重启 Ollama，并通过防火墙限制为可信本机网络。也可以在本地 `.env` 中把 `OLLAMA_DOCKER_BASE_URL` 改为实际可达的 Windows/WSL 网关地址。
-
-### Day13 最终发布验收
-
-2026-08-18 在 WSL2 + Docker Desktop 目标环境完成实测：
-
-| 验收项 | 实测结果 |
-|---|---|
-| 宿主 Python | `3.10.19`，`pip check` 通过，`322 passed in 18.24s` |
-| Docker 环境 | Docker Desktop `4.81.0`，Engine `29.6.1`，Compose `v5.2.0` |
-| 镜像与身份 | `chat-api:v2-plus` 构建通过；容器 Python `3.10.19`；`uid=10001(app)` |
-| 健康检查 | `/ready` 连续成功，状态 `healthy`，`FailingStreak=0` |
-| 持久化 | `/app/data`、`/app/runs`、`/app/kb` 三个命名卷挂载正确，`down/up` 后 3/3 marker 保留 |
-| 协议 smoke | 首次启动和容器重建后均为 6/6 passed |
-| 宿主机 Ollama | `host.docker.internal -> 192.168.65.254`；`/api/tags` HTTP 200；发现 `qwen2.5:7b` |
-| 实现提交 | [`5c75a35 chore(day13): add docker release packaging`](https://github.com/ConnorLuis/chat-api/commit/5c75a3516d1b1fc6a0f5b50fc74925be58d609d6) |
-| 远端 CI | [run `32107582238`](https://github.com/ConnorLuis/chat-api/actions/runs/32107582238)：Python job `95620047535` 与 Docker job `95620047554` 均 passed |
-| 远端测试 | Python 3.10：`322 passed in 17.65s`；Docker 容器 `healthy`；六链路 smoke 6/6 passed |
-
-上述本地和远端结果共同完成了 Day13 发布验收。Chat-Day13 与 `chat-api` v2-plus 已正式收口；后续文档提交触发的 CI 只用于验证文档变更没有破坏发布基线，不需要把该次 run 反向写回文档。
-
-### 镜像范围与面试口径
-
-基础镜像包含 Native RAG、LangChain Chroma 和 OpenAI SDK；真实 Hugging Face embedding 依赖 `sentence-transformers`，体积较大，仍作为自定义镜像的可选扩展，不把模型权重打进通用 API 镜像。Ollama 也不与 API 强行编排在同一个 Compose 中，从而让 GPU/模型生命周期独立于 Gateway。
-
-面试时可以概括为：项目不是“写了一个 Dockerfile”，而是明确了启动初始化、非 root 权限、健康/就绪语义、持久化边界、宿主机模型网络和协议级 smoke contract；同时根据 Day12 的 C50 连接池瓶颈保持 SQLite 单 worker，并把 PostgreSQL、多实例和分布式限流作为真实扩展路径。
-
----
-
-## Environment variables
-
-* `CHAT_API_PORT` (Docker Compose default: `8000`)：宿主机发布端口
-* `OLLAMA_DOCKER_BASE_URL` (Docker Compose default: `http://host.docker.internal:11434`)：容器访问宿主机 Ollama 的地址
-* `APP_LOG_LEVEL` (default: `INFO`)：应用请求日志级别；正式压测固定为 `WARNING`
-* `OLLAMA_BASE_URL` (default: `http://127.0.0.1:11434`)
-* `OLLAMA_MODEL` (default: `qwen2.5:7b`)
-* `OLLAMA_TIMEOUT_S` (default: `60`)
-* `OPENAI_API_KEY`：OpenAI / OpenAI-compatible Provider API key
-* `OPENAI_BASE_URL`：可选 OpenAI-compatible endpoint
-* `OPENAI_MODEL`：OpenAI Provider 默认模型；请求体 `model` 优先级更高
-* `OPENAI_TIMEOUT_S` (default: `60`)
-* `OPENAI_COMPAT_DEFAULT_PROVIDER` (default: `mock`)：`/v1/chat/completions` 未传网关扩展字段 `provider` 时使用的默认 Provider
-* `PROVIDER_RETRY_MAX_ATTEMPTS` (default: `2`)：单个 Provider 最大尝试次数，包含首次调用
-* `PROVIDER_RETRY_BASE_DELAY_MS` (default: `100`)：指数退避初始延迟
-* `PROVIDER_RETRY_MAX_DELAY_MS` (default: `1000`)：指数退避延迟上限
-* `PROVIDER_FALLBACK_ENABLED` (default: `false`)：是否在 primary 的可重试错误耗尽后启用 fallback
-* `PROVIDER_FALLBACK_PROVIDER`：fallback Provider；启用 fallback 时必填且不能形成自循环
-* `PROVIDER_FALLBACK_MODEL`：fallback 专用模型；为空时使用 fallback Provider 默认模型，不复用 primary 请求模型
-* `DATABASE_URL` (default: `sqlite:///./data/chat_api.db`)：Conversation / Message / UsageRecord / UsageCost / APIKey 关系数据库连接地址；未来可切换 PostgreSQL
-* `API_AUTH_ENABLED` (default: `false`)：是否启用业务 API 的 API Key 鉴权
-* `API_KEY_HASH_PEPPER`：服务端 HMAC pepper；启用认证时必须安全配置，不能写入数据库或提交到 Git
-* `REQUEST_RATE_LIMIT_ENABLED` (default: `false`)：是否启用请求限流
-* `USER_RATE_LIMIT_REQUESTS` (default: `60`) / `USER_RATE_LIMIT_WINDOW_SECONDS` (default: `60`)
-* `IP_RATE_LIMIT_REQUESTS` (default: `120`) / `IP_RATE_LIMIT_WINDOW_SECONDS` (default: `60`)
-* `RATE_LIMIT_TRUST_PROXY_HEADERS` (default: `false`)：仅在可信反向代理会覆盖客户端 IP 头时启用
-* `TOKEN_QUOTA_ENABLED` (default: `false`)：是否启用 caller-aware 每日 token quota
-* `DAILY_TOKEN_QUOTA_TOKENS` (default: `100000`)
-* `PRICING_CATALOG_PATH` (default: `config/pricing_catalog.json`)：版本化 Provider/Model prompt/completion 单价目录
-* `CONVERSATION_HISTORY_MAX_TURNS` (default: `10`)：最多保留的最近 user-led 历史轮数
-* `CONVERSATION_CONTEXT_TOKEN_BUDGET` (default: `4096`)：历史 + 当前请求 + system prompt 的估算 token 上限
-* `CONVERSATION_HISTORY_FETCH_LIMIT` (default: `500`)：从数据库读取的最大历史消息条数
-* `PROMPTS_DIR` (default: `prompts`)
-* `RUN_LOG_PATH` (default: `runs/prompt_runs.jsonl`)
-* `KB_DIR` (default: `kb`)
-* `KB_CHROMA_DIR` (default: `${KB_DIR}/chroma`)
-* `KB_COLLECTION` (default: `kb_chunks`)
-* `KB_CHUNK_SIZE` (default: `800`) / `KB_CHUNK_OVERLAP` (default: `120`)
-* `KB_TOP_K` (default: `3`)
-* `KB_CANDIDATE_K` (default: `50`)：先召回更大候选池，再 rerank 截断到 `kb_top_k`
-* `KB_MAX_CONTEXT_CHARS` (default: `2000`)
-* `DOCS_DIR` (default: `${KB_DIR}/docs`) / `INDEX_FILE` (default: `${KB_DIR}/docs.jsonl`)
-* `RAG_BACKEND` (default: `native`, options: `native|langchain`)：Day24 新增 backend skeleton；Day25 接入 `/chat` 与 `/chat/stream`；Day26 已实现 LangChain Chroma retriever；Day27 暴露 observability；Day28 使用 Hybrid fusion rerank
-* `EMBEDDING_PROVIDER` (default: `mock`, options: `mock|hf`)
-* `EMBEDDING_MODEL` (default: `maidalun1020/bce-embedding-base_v1`)：HF embedding 模型名或本地路径
-* `EMBEDDING_DIM` (default: `512`)：mock embedding 维度
-
-### WSL2 -> Windows Ollama
-
-如果 Ollama 安装在 Windows，WSL 需要用 Windows 网关 IP 访问：
-
-```bash
-WIN_IP=$(grep -m 1 nameserver /etc/resolv.conf | awk '{print $2}')
-export OLLAMA_BASE_URL="http://$WIN_IP:11434"
-```
-
----
-
-## Multi-Provider Architecture (Chat-Day2)
-
-Chat-Day2 将原有 `LLMEngine` 字符串返回接口升级为统一 Provider 层：
+### Health
 
 ```text
-HTTP API / Prompt Compare
-        ↓
-build_provider_request()
-        ↓
-ProviderFactory
-        ↓
-ChatProvider Protocol
-  ├── MockProvider
-  ├── OllamaProvider
-  └── OpenAIProvider
+GET /health
+GET /ready
 ```
 
-Provider 内部统一结构：
-
-```text
-ProviderMessage
-ProviderChatRequest
-ProviderChatResponse
-ProviderChatChunk
-ProviderUsage
-```
-
-主调用链：
+### Native chat
 
 ```text
 POST /chat
-  → get_chat_provider()
-  → provider.chat()
-
 POST /chat/stream
-  → get_chat_provider()
-  → provider.stream()
-
-POST /prompt/compare
-  → get_chat_provider()
-  → provider.chat()
 ```
 
-设计约束：
-
-- API 层 `ChatRequest` 与 Provider 内部请求模型分离，RAG、PromptHub、session 等业务字段不下沉到 Provider。
-- `model` 采用请求级覆盖；为空时使用 Provider 默认模型，仍无法解析时返回 `"unknown"` 或明确配置错误。
-- MockProvider 无网络依赖，用于 deterministic tests 和 CI。
-- OllamaProvider 继续使用现有 `/api/generate` 协议，避免在 Provider 重构时同时改变模型协议。
-- OpenAIProvider 支持 OpenAI / OpenAI-compatible endpoint，SDK 懒加载，缺少 API key 时沿用现有 502 错误契约。
-- 无调用方的旧 `src/app/llm/engines/` 已删除；`src/app/llm/providers/` 是唯一模型调用边界。
-
----
-
-## Provider Resilience (Chat-Day11)
-
-`ProviderFactory` 返回由 `ResilientChatProvider` 包装的统一 Provider。路由、RAG、PromptHub、会话持久化与 usage/cost 不各自实现 retry，从而避免不同入口出现不同容错语义。
-
-默认策略：
-
-```dotenv
-PROVIDER_RETRY_MAX_ATTEMPTS=2
-PROVIDER_RETRY_BASE_DELAY_MS=100
-PROVIDER_RETRY_MAX_DELAY_MS=1000
-PROVIDER_FALLBACK_ENABLED=false
-PROVIDER_FALLBACK_PROVIDER=
-PROVIDER_FALLBACK_MODEL=
-```
-
-错误语义：
-
-| 错误 | retry | fallback |
-|---|---:|---:|
-| timeout、connection failure、HTTP 408/429/5xx | 是 | primary 尝试耗尽后可用 |
-| dependency/configuration error、其他 HTTP 4xx、未知 invocation error | 否 | 否 |
-| 已输出非空 token 后的 stream interruption | 否 | 否 |
-
-约束：
-
-- `max_attempts` 包含首次调用；重试使用有上限的指数退避。
-- fallback 默认关闭，只能在 primary 的可重试错误耗尽后触发。
-- fallback 请求使用 `PROVIDER_FALLBACK_MODEL` 或 fallback 默认模型，不把 primary 的 request-level model 错误地传给另一个 Provider。
-- OpenAI SDK 内置重试固定为 `max_retries=0`，避免 SDK 与网关产生双重重试。
-- 流式调用可在首个非空 token 前 retry/fallback；一旦输出开始，失败统一为 `provider_stream_interrupted`，不重放内容。
-- 成功后的 Message、UsageRecord 与 UsageCost 归属于最终成功的 Provider/Model；失败尝试仅进入 resilience 可观测信息。
-
-公开可观测字段：
-
-```text
-/chat、/prompt/compare
-  -> metadata.provider_execution
-
-/chat/stream
-  -> usage.provider_execution 或 error.provider_execution
-
-/v1/chat/completions（同步）
-  -> gateway.provider_execution
-
-/v1/chat/completions（流式）
-  -> finish chunk 或 error 的 gateway.provider_execution
-```
-
-`provider_execution` 包含 `primary_provider`、`final_provider`、`total_attempts`、`retries`、`fallback_used` 和逐次 `attempts`。原生 SSE 仍保持 `meta -> token* -> usage -> done` 或 `meta -> token* -> error`；OpenAI-compatible SSE 仍以 `[DONE]` 作为成功终止标记。
-
----
-
-## Reproducible Load Testing (Chat-Day12)
-
-Day12 使用项目内置、基于 `httpx` 的异步 HTTP 压测器，不新增运行依赖。它覆盖 `native_sync`、`native_stream`、`openai_sync` 和 `openai_stream`，warm-up 不计入测量，并把 HTTP 2xx 但响应契约不完整或 SSE 未正常终止的请求计为失败。
-
-服务端固定为单 worker、独立 SQLite 且关闭 limiter/quota 后运行：
+同步示例：
 
 ```bash
-python scripts/run_load_test.py \
-  --config benchmarks/configs/mock_baseline.json
-```
-
-输出位于 `benchmarks/results/<suite>-<UTC timestamp>/`：
-
-- `report.md`：吞吐量、P50/P95/P99、错误率和流式 TTFT 汇总；
-- `summary.json`：配置、Git commit、Python/平台信息和机器可读汇总；
-- `<scenario>.json`：逐请求 latency、TTFT、状态码和错误分类原始样本。
-
-完整启动命令、指标定义、复现规则和 Ollama 示例见 [`benchmarks/README.md`](benchmarks/README.md)。生成结果已被 Git 忽略；只有经过复核、注明环境的聚合数字才应摘录进项目文档。
-
-### Mock baseline（2026-08-17，三次）
-
-固定环境：commit `a23c92e`（`git_dirty=false`）、Python 3.10.19、WSL2 Linux x86_64、32 logical CPUs、Uvicorn 单 worker、独立 SQLite、MockProvider、应用/server 日志级别 `WARNING`、access log 关闭、认证/限流/token quota 关闭。每次运行相同的 8 场景矩阵和 1,320 个测量请求，warm-up 不计入指标。
-
-下表中 RPS 为三次算术平均值 `[最小值–最大值]`；P50/P95 为三次中位数 `[最小值–最大值]`；TTFT 列为 P50/P95 的三次中位数；错误率按三次请求合并计算。
-
-| Scenario | C | 三次请求数 | RPS | P50 ms | P95 ms | TTFT P50/P95 ms | 合并错误率 |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| `native-sync-c1` | 1 | 300 | 179.527 `[164.901–187.788]` | 4.991 `[4.953–5.296]` | 6.689 `[6.063–7.341]` | — | 0/300（0%） |
-| `native-sync-c10` | 10 | 900 | 221.261 `[218.388–226.150]` | 8.691 `[8.457–8.806]` | 149.267 `[136.578–236.035]` | — | 0/900（0%） |
-| `native-sync-c50` | 50 | 1,500 | 201.467 `[193.566–207.942]` | 169.073 `[163.384–170.793]` | 563.727 `[483.784–597.023]` | — | 49/1,500（3.267%） |
-| `native-stream-c1` | 1 | 60 | 2.507 `[2.474–2.524]` | 399.897 `[395.558–406.454]` | 413.824 `[413.430–420.495]` | 6.252/8.222 | 0/60（0%） |
-| `native-stream-c10` | 10 | 150 | 25.249 `[25.043–25.538]` | 369.962 `[365.391–385.857]` | 433.856 `[423.584–476.070]` | 2.261/15.402 | 0/150（0%） |
-| `native-stream-c25` | 25 | 300 | 57.855 `[57.441–58.371]` | 382.950 `[369.589–393.190]` | 517.925 `[491.583–527.503]` | 2.367/45.854 | 0/300（0%） |
-| `openai-sync-c10` | 10 | 600 | 189.509 `[147.730–232.280]` | 9.271 `[9.161–9.306]` | 138.119 `[112.817–187.851]` | — | 0/600（0%） |
-| `openai-stream-c10` | 10 | 150 | 23.945 `[23.705–24.260]` | 413.931 `[407.903–418.080]` | 432.492 `[417.963–441.859]` | 13.803/22.360 | 0/150（0%） |
-
-结论：native sync 从 C1 到 C10 吞吐量提升，但 C50 吞吐量回落、P50 从约 8.7ms 跃升到约 169ms、P95 升至约 564ms，并在后两次运行出现 5.0%/4.8% 错误。因此本环境的过载拐点位于 C10 与 C50 之间；当前矩阵不足以声称更精确的最大安全并发。49 个失败均为 `QueuePool limit of size 5 overflow 10 reached` 引起的持久化 HTTP 500，说明瓶颈位于数据库连接池/持久化路径。生产扩展方向是 PostgreSQL、显式连接池调优和分层容量测试，而不是增加模型 retry 来掩盖数据库错误。
-
-流式场景三次均无错误；其总延迟主要来自 MockProvider 为模拟增量输出而设置的确定性逐 token 延迟，因此只能作为 Gateway/SSE/persistence 基线，不能代表真实 LLM 的 token generation latency。RPS 统计所有已完成的测量请求（包括失败请求）；逐次 P99、状态分布、失败 trace 和原始样本保留在本地 `benchmarks/results/mock-baseline-a23c92e-run{1,2,3}/`，不提交运行产物。
-
----
-
-## OpenAI-compatible Chat Completions (Chat-Day3 / Chat-Day4)
-
-统一入口：
-
-```text
-POST /v1/chat/completions
-```
-
-该接口是独立协议兼容层，直接复用 Chat-Day2 的 `ChatProvider` 与 `ProviderFactory`，不会调用旧 `/chat` 或 `/chat/stream` 路由，也不会把 RAG、PromptHub、Replay 或旧 metadata 契约耦合进 OpenAI-compatible API。
-
-### 当前支持范围
-
-```text
-stream=false → chat.completion
-stream=true  → text/event-stream + chat.completion.chunk
-单 choice：n=1
-纯文本 messages
-roles：developer / system / user / assistant
-model / temperature / top_p
-max_tokens / max_completion_tokens
-stream_options.include_usage
-可选网关扩展字段 provider=mock|ollama|openai
-```
-
-当前暂不支持：
-
-```text
-tools / tool_calls / function
-多模态 content parts
-n > 1
-真实 logprobs 计算
-response_format
-```
-
-### Non-stream request
-
-```bash
-curl -s -X POST http://127.0.0.1:8000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "mock-compatible-model",
-    "messages": [
-      {
-        "role": "user",
-        "content": "hello from curl"
-      }
-    ]
-  }' | python -m json.tool
-```
-
-### Non-stream response
-
-```json
-{
-  "id": "chatcmpl-...",
-  "object": "chat.completion",
-  "created": 1783671773,
-  "model": "mock-compatible-model",
-  "choices": [
-    {
-      "index": 0,
-      "message": {
-        "role": "assistant",
-        "content": "[mock] you said: hello from curl"
-      },
-      "finish_reason": "stop",
-      "logprobs": null
-    }
-  ]
-}
-```
-
-当 Provider 返回完整 `prompt_tokens/completion_tokens/total_tokens` 时，接口返回 `usage`；未知用量不会伪造为零，而是省略该字段。
-
-### Streaming request
-
-```bash
-curl -N -X POST http://127.0.0.1:8000/v1/chat/completions \
-  -H "Content-Type: application/json" \
+curl -sS http://127.0.0.1:8000/chat \
+  -H 'Content-Type: application/json' \
   -d '{
     "provider": "mock",
-    "model": "mock-stream-model",
     "messages": [
-      {
-        "role": "user",
-        "content": "hello day4"
-      }
+      {"role": "user", "content": "hello"}
     ],
-    "stream": true
+    "temperature": 0,
+    "max_tokens": 64,
+    "use_kb": false
   }'
 ```
 
-响应头：
+流式接口使用 SSE，正常链路为：
 
 ```text
-Content-Type: text/event-stream
-Cache-Control: no-cache
-X-Accel-Buffering: no
+meta -> token* -> usage -> done
 ```
 
-流式协议：
+Provider 在首 token 之后失败时不会 retry/fallback，也不会从头重放已经发送的内容。
+
+### OpenAI-compatible chat
 
 ```text
-data: {assistant role chunk}
-
-data: {content delta chunk}
-data: {content delta chunk}
-...
-
-data: {finish_reason chunk}
-
-data: {usage chunk}      # 仅 include_usage=true 且 Provider usage 完整
-
-data: [DONE]
+POST /v1/chat/completions
 ```
 
-首个 chunk：
+同步示例：
 
-```json
-{
-  "id": "chatcmpl-...",
-  "object": "chat.completion.chunk",
-  "created": 1783751885,
-  "model": "mock-stream-model",
-  "choices": [
-    {
-      "index": 0,
-      "delta": {
-        "role": "assistant"
-      },
-      "finish_reason": null,
-      "logprobs": null
-    }
-  ]
-}
+```bash
+curl -sS http://127.0.0.1:8000/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "provider": "mock",
+    "model": "mock-load-model",
+    "messages": [
+      {"role": "user", "content": "hello"}
+    ],
+    "temperature": 0,
+    "max_tokens": 64
+  }'
 ```
 
-内容 chunk：
-
-```json
-{
-  "id": "chatcmpl-...",
-  "object": "chat.completion.chunk",
-  "created": 1783751885,
-  "model": "mock-stream-model",
-  "choices": [
-    {
-      "index": 0,
-      "delta": {
-        "content": "hello"
-      },
-      "finish_reason": null,
-      "logprobs": null
-    }
-  ]
-}
-```
-
-结束 chunk：
-
-```json
-{
-  "id": "chatcmpl-...",
-  "object": "chat.completion.chunk",
-  "created": 1783751885,
-  "model": "mock-stream-model",
-  "choices": [
-    {
-      "index": 0,
-      "delta": {},
-      "finish_reason": "stop",
-      "logprobs": null
-    }
-  ]
-}
-```
-
-### Optional usage chunk
-
-请求：
+流式请求设置：
 
 ```json
 {
@@ -726,2598 +239,590 @@ data: [DONE]
 }
 ```
 
-Provider 返回完整 usage 时，在 `[DONE]` 前输出：
-
-```json
-{
-  "id": "chatcmpl-...",
-  "object": "chat.completion.chunk",
-  "created": 1783751885,
-  "model": "actual-stream-model",
-  "choices": [],
-  "usage": {
-    "prompt_tokens": 8,
-    "completion_tokens": 3,
-    "total_tokens": 11
-  }
-}
-```
-
-不完整 usage 不会使用零值补齐，也不会输出 usage chunk。
-
-### Provider routing
-
-标准客户端只传 `model` 时使用：
+正常终止：
 
 ```text
-OPENAI_COMPAT_DEFAULT_PROVIDER
+data: [DONE]
 ```
 
-默认：
+### Other APIs
+
+项目还提供：
+
+- Conversation 创建、列表、查询、重命名、删除和消息分页查询
+- `/auth/whoami`
+- `/prompt/compare`
+- `/usage/pricing`
+- `/usage/records`
+- `/usage/summary`
+- `/usage/daily`
+- `/usage/providers`
+- `/usage/models`
+- KB 文档入库、查询、删除与检索接口
+
+完整行为和示例见：
+
+- `docs/v2_demo_guide.md`
+- `docs/system_design.md`
+
+## 5. Conversation and context window
+
+Conversation 层基于 SQLAlchemy 2.x：
+
+- `Conversation`
+- `Message`
+- 稳定 `sequence_no`
+- 会话级历史加载
+- 消息分页
+- Conversation 删除级联清理 Message
+
+聊天请求可携带 `conversation_id`。历史上下文支持：
+
+1. 最近 N 轮；
+2. token budget；
+3. 当前问题优先保留；
+4. 返回截断状态用于 observability。
+
+持久化语义是 **完整成功后原子保存本轮 user/assistant**：
 
 ```text
-mock
+success:
+user + assistant -> commit
+
+provider failure:
+no half conversation
+
+stream client disconnect / stream failure:
+no half conversation
 ```
 
-网关调用方可以传扩展字段：
+因此失败不会留下只有 user、没有 assistant 的半轮对话。
 
-```json
-{
-  "provider": "ollama",
-  "model": "qwen2.5:7b",
-  "messages": [
-    {
-      "role": "user",
-      "content": "hello"
-    }
-  ]
-}
-```
+## 6. Provider abstraction and resilience
 
-官方 Python SDK 可通过：
-
-```python
-extra_body={"provider": "mock"}
-```
-
-传递该扩展字段。
-
-### Official Python SDK compatibility
-
-非流式：
-
-```python
-from openai import OpenAI
-
-client = OpenAI(
-    base_url="http://127.0.0.1:8000/v1",
-    api_key="local-test-key",
-)
-
-completion = client.chat.completions.create(
-    model="mock-compatible-model",
-    messages=[
-        {
-            "role": "user",
-            "content": "hello from openai sdk",
-        }
-    ],
-)
-```
-
-流式：
-
-```python
-stream = client.chat.completions.create(
-    model="mock-stream-model",
-    messages=[
-        {
-            "role": "user",
-            "content": "hello from sdk stream",
-        }
-    ],
-    stream=True,
-    extra_body={
-        "provider": "mock",
-    },
-)
-
-parts = []
-
-for chunk in stream:
-    if chunk.choices[0].delta.content is not None:
-        parts.append(chunk.choices[0].delta.content)
-
-print("".join(parts))
-```
-
-Chat-Day4 实测输出：
+Provider 统一为 `ChatProvider`：
 
 ```text
-[mock-stream] [mock] you said: hello from sdk stream
+MockProvider
+OllamaProvider
+OpenAIProvider
 ```
 
-启用 `API_AUTH_ENABLED=true` 后，SDK 的 `api_key` 会作为 `Authorization: Bearer <key>` 发送，并由网关执行真实 API Key 鉴权。
+`ProviderFactory` 隔离不同 SDK / HTTP provider 的调用差异。
 
-### Streaming error contract
+### Retry classification
 
-SSE 通道建立后不能再切换为 HTTP 502，因此 Provider 失败时输出可解析的 data-only error：
+只对明确可恢复错误执行有界重试，例如：
+
+- connect timeout
+- 首 token 前 read timeout
+- HTTP 429
+- HTTP 502 / 503 / 504
+
+以下错误不进行无意义重试：
+
+- 400 类请求错误
+- authentication / authorization
+- provider configuration error
+- optional dependency missing
+- protocol / response contract error
+
+### Backoff
+
+Provider execution 支持：
+
+- bounded retry attempts
+- exponential backoff
+- jitter
+- explicit timeout
+- optional fallback chain
+
+### Fallback boundary
+
+同步路径可在当前 Provider 可恢复失败后尝试显式 fallback。
+
+流式路径采用更严格语义：
 
 ```text
-data: {"error":{"message":"...","type":"api_error","param":null,"code":"provider_error"}}
+before first non-empty token:
+retry / fallback allowed
 
+after first non-empty token:
+retry forbidden
+fallback forbidden
+replay forbidden
 ```
 
-失败流：
+这避免客户端收到重复内容。
+
+fallback 必须显式配置，不会默认回退到 MockProvider。
+
+### Observability
+
+原生响应暴露：
 
 ```text
-不输出 finish chunk
-不输出 usage chunk
-不输出 data: [DONE]
+provider_execution
 ```
 
-正常流只使用：
+OpenAI-compatible 响应暴露：
 
 ```text
-data: ...
+gateway.provider_execution
 ```
 
-不会泄漏旧接口的：
+记录包括：
+
+- requested provider
+- active/final provider
+- attempt chain
+- retry count
+- fallback used
+- provider/model
+
+## 7. RAG
+
+支持：
 
 ```text
-event: meta
-event: token
-event: usage
-event: done
-event: error
+RAG_BACKEND=native|langchain
 ```
 
----
+核心能力：
 
-## Conversation Persistence Foundation (Chat-Day5)
+- KB 文档入库
+- Chroma vector retrieval
+- lexical scoring
+- vector + lexical fusion rerank
+- citations
+- native / LangChain backend 统一契约
+- retrieval timing / observability
+- KB soft delete / vector cleanup
+- QA20 离线评估工作流
 
-Chat-Day5 新增关系数据库持久化基础，但尚未把历史消息自动接入聊天路由。
+Hybrid RAG 将 vector 与 lexical signal 融合，并在响应 metadata / SSE RAG 信息中暴露检索模式和权重。
 
-### Storage strategy
+可复现 RAG workflow：
 
 ```text
-ORM: SQLAlchemy 2.x
-Local development: SQLite
-Default URL: sqlite:///./data/chat_api.db
-Future production: PostgreSQL
+scripts/seed_kb.py
+scripts/run_rag_eval_workflow.py
+scripts/eval_qa_rag.py
 ```
 
-未来切换 PostgreSQL 时，主要通过 `DATABASE_URL` 替换连接地址：
+相关设计见：
 
 ```text
-postgresql+psycopg://user:password@host:5432/chat_api
+docs/system_design.md
+docs/v2_demo_guide.md
 ```
 
-Day5 避免使用 SQLite 专属列类型和手写 `sqlite3` SQL，模型仅使用 SQLAlchemy 通用类型与 ORM API。
+## 8. Authentication and request limits
 
-### Database initialization
+### API Key
+
+API Key 创建：
 
 ```bash
-python -m src.app.db
+python -m src.app.auth create --name local
 ```
 
-预期：
-
-```text
-database initialized: sqlite:///./data/chat_api.db
-```
-
-默认创建：
-
-```text
-conversations
-messages
-usage_records
-usage_costs
-api_keys
-```
-
-本地数据库目录：
-
-```text
-data/
-```
-
-已加入 `.gitignore`，不会提交运行时数据库文件。
-
-### Conversation model
-
-```text
-id: UUID string
-title: nullable string
-created_at: UTC datetime
-updated_at: UTC datetime
-```
-
-### Message model
-
-```text
-id: UUID string
-conversation_id: foreign key
-role: developer/system/user/assistant
-content: text
-provider: nullable string
-model: nullable string
-token_count: nullable integer
-created_at: UTC datetime
-```
-
-外键规则：
-
-```text
-Conversation delete
-  → Message ON DELETE CASCADE
-```
-
-单条 Message 只保存消息级 `token_count`。请求级统计与成本不写入 Message：
-
-```text
-UsageRecord:
-  prompt_tokens / completion_tokens / total_tokens
-  status / usage_source / trace_id / latency_ms
-
-UsageCost:
-  pricing_key / pricing_version / currency / unit_tokens
-  prompt_cost / completion_cost / estimated_cost / cost_status
-```
-
-该边界避免把请求级计费字段重复写入多条 Message，并允许 Conversation 删除后保留独立 accounting 事实。
-
-### Architecture
-
-```text
-ORM model
-  → Repository
-  → Service
-  → Future API route
-```
-
-职责：
-
-```text
-Model:
-  表结构和 relationship。
-
-Repository:
-  add / flush / query / delete；
-  不负责 commit。
-
-Service:
-  参数规范化；
-  Conversation 存在性检查；
-  跨 repository 编排；
-  commit / rollback。
-
-API route:
-  Chat-Day5 未接入数据库。
-```
-
-关键模块：
-
-```text
-src/app/db/base.py
-src/app/db/session.py
-src/app/db/types.py
-src/app/db/utils.py
-src/app/db/models/
-src/app/db/repositories/
-src/app/services/conversation_service.py
-tests/db/
-```
-
-### Session boundary
-
-默认 engine 和 session factory 使用懒加载，导入数据库模块不会立即创建本地文件。
-
-SQLite 专属连接配置只在 SQLite backend 生效：
-
-```text
-check_same_thread=False
-PRAGMA foreign_keys=ON
-```
-
-PostgreSQL 不会收到这些连接参数。
-
-### UTC time boundary
-
-新增 `UTCDateTime`：
-
-```text
-SQLite:
-  bind 时存 UTC naive；
-  load 时恢复 UTC-aware。
-
-PostgreSQL:
-  使用 timezone-aware DateTime。
-```
-
-应用层始终使用 UTC-aware datetime。
-
-### Isolated tests
-
-每个数据库测试使用：
-
-```text
-tmp_path/chat_api_test.db
-```
-
-因此不会污染：
-
-```text
-data/chat_api.db
-kb/chroma/chroma.sqlite3
-```
-
-### Day5 boundaries
-
-Chat-Day5 未修改：
-
-```text
-/chat
-/chat/stream
-/v1/chat/completions
-/prompt/compare
-RAG
-PromptHub
-Replay
-Provider implementations
-```
-
-也未提前实现：
-
-```text
-自动保存聊天消息
-自动加载历史
-上下文窗口截断
-token budget
-Conversation HTTP API
-usage/cost 落库
-```
-
-这些属于 Chat-Day6 及后续阶段。
-
----
-
-
-## Multi-Conversation History and Context Window (Chat-Day6)
-
-Chat-Day6 将 Chat-Day5 的数据库基础正式接入项目原生聊天主链路：
-
-```text
-POST /chat
-POST /chat/stream
-```
-
-OpenAI-compatible：
-
-```text
-POST /v1/chat/completions
-```
-
-继续保持独立、无状态，不自动读取或写入 Conversation 历史。
-
-### Stateful vs stateless boundary
-
-`conversation_id` 是可选字段：
-
-```text
-不传 conversation_id:
-  继续使用原有无状态行为；
-  不读取数据库；
-  不写入 Conversation / Message。
-
-传入 conversation_id:
-  Conversation 必须已经存在；
-  服务端读取历史；
-  将截断后的历史与当前 body.messages 合并；
-  Provider 完整成功后原子保存当前请求消息和最终 assistant 回复。
-```
-
-新 Conversation 通过 `POST /conversations` 创建；聊天接口不会隐式创建 Conversation。
-
-`body.messages` 在有 `conversation_id` 时仍表示“本次新增消息”，不是客户端重复提交的完整历史。
-
-### Message ordering
-
-Message 新增：
-
-```text
-sequence_no: integer, >= 1
-```
-
-约束：
-
-```text
-UNIQUE(conversation_id, sequence_no)
-```
-
-历史查询固定按：
-
-```text
-sequence_no ASC
-```
-
-排序，不依赖 `created_at` 或 UUID，避免相同时间戳与随机 ID 造成顺序漂移。
-
-### Context window
-
-服务端消息合并顺序：
-
-```text
-PromptHub / RAG 生成的 server system prompt
-→ 截断后的持久化历史
-→ 当前 body.messages
-```
-
-当前配置：
-
-```text
-CONVERSATION_HISTORY_MAX_TURNS=10
-CONVERSATION_CONTEXT_TOKEN_BUDGET=4096
-CONVERSATION_HISTORY_FETCH_LIMIT=500
-```
-
-估算规则：
-
-```text
-message_tokens = max(1, ceil(len(content) / 2)) + 4
-```
-
-截断原则：
-
-```text
-1. 当前请求消息永不删除。
-2. system prompt 计入预算。
-3. 历史从旧到新淘汰。
-4. 优先保留最近完整 user-led turns。
-5. 不为了塞入预算而保留半个历史对话轮。
-```
-
-### Persistence semantics
-
-同步 `/chat`：
-
-```text
-读取历史时使用短 Session
-→ Provider 调用期间不持有 DB Session
-→ Provider 成功
-→ 当前请求消息 + assistant 最终回复在一个事务内提交
-```
-
-流式 `/chat/stream`：
-
-```text
-先输出 meta / token*
-→ 内存累积完整 assistant 内容
-→ Provider 正常结束
-→ 原子保存当前请求消息 + 完整 assistant
-→ 仅在提交成功后输出 usage / done
-```
-
-失败语义：
-
-```text
-Conversation 不存在:
-  在 Provider 调用前返回 HTTP 404。
-
-同步 Provider 失败:
-  HTTP 502；
-  不保存当前 user；
-  不保存 assistant。
-
-流式 Provider 失败:
-  event: meta → event: error；
-  不输出 usage / done；
-  不保存当前 user；
-  不保存部分 assistant。
-
-客户端断开:
-  传播 asyncio.CancelledError；
-  关闭 Provider async iterator；
-  不保存部分 assistant。
-```
-
-PromptHub / RAG 注入的 server system prompt 只参与当前 Provider 请求，不写入 Message 表。
-
-### Conversation HTTP API
-
-```text
-POST   /conversations
-GET    /conversations
-GET    /conversations/{conversation_id}
-PATCH  /conversations/{conversation_id}
-DELETE /conversations/{conversation_id}
-GET    /conversations/{conversation_id}/messages
-```
-
-创建 Conversation：
+Docker：
 
 ```bash
-curl -s -X POST http://127.0.0.1:8000/conversations \
-  -H "Content-Type: application/json" \
-  -d '{"title":"My conversation"}' \
-  | python -m json.tool
+docker compose exec chat-api \
+  python -m src.app.auth create --name local
 ```
 
-Stateful sync chat：
+明文 key **只在创建时返回一次**。数据库只保存：
+
+- prefix
+- HMAC-SHA256 digest
+- metadata
+- active/revoked status
+
+支持：
+
+```text
+Authorization: Bearer <key>
+X-API-Key: <key>
+```
+
+查询：
 
 ```bash
-curl -s -X POST http://127.0.0.1:8000/chat \
-  -H "Content-Type: application/json" \
-  -d '{
-    "provider": "mock",
-    "model": "mock-model",
-    "conversation_id": "<conversation-id>",
-    "messages": [
-      {
-        "role": "user",
-        "content": "hello with persisted history"
-      }
-    ]
-  }' | python -m json.tool
+python -m src.app.auth list
 ```
 
-Stateful stream：
+吊销：
 
 ```bash
-curl -sN -X POST http://127.0.0.1:8000/chat/stream \
-  -H "Content-Type: application/json" \
-  -d '{
-    "provider": "mock",
-    "model": "mock-stream-model",
-    "conversation_id": "<conversation-id>",
-    "messages": [
-      {
-        "role": "user",
-        "content": "continue this conversation"
-      }
-    ]
-  }'
+python -m src.app.auth revoke <key_id>
 ```
 
-查询消息：
+### Rate limit
 
-```bash
-curl -s \
-  "http://127.0.0.1:8000/conversations/<conversation-id>/messages?limit=50&offset=0" \
-  | python -m json.tool
-```
+支持：
 
-### Compatibility
+- API Key / caller 维度
+- client IP 维度
+- trusted proxy 开关
 
-保持不变：
+默认不盲目信任 `X-Forwarded-For` 等代理头。
 
-```text
-无 conversation_id 的 /chat 行为
-无 conversation_id 的 /chat/stream 事件顺序
-PromptHub / RAG / Replay
-/prompt/compare
-OpenAI-compatible /v1/chat/completions
-OpenAI SDK 非流式与 stream=True
-```
+### Daily token quota
 
-Day6 commit：
+按 caller 统计每日 token，并覆盖：
 
-```text
-d60c5e3 feat(day6): add conversation history and context window
-```
+- native sync
+- native stream
+- OpenAI-compatible sync
+- OpenAI-compatible stream
 
-GitHub Actions：
+quota 与 Usage accounting 使用统一请求身份，避免不同 API 路径口径分裂。
 
-```text
-workflow: CI
-run id: 29145652536
-branch: v2-langchain-rag-plus
-sha: d60c5e3
-status: completed
-result: success
-event: push
-```
+## 9. Usage and cost
 
----
+每个请求独立生成 `UsageRecord`，不把计费事实塞入聊天 Message。
 
-## Token Usage Accounting (Chat-Day7)
+记录包括：
 
-Chat-Day7 将请求级 token accounting 从 Message 中拆出，新增独立 `UsageRecord`：
+- trace id
+- conversation id
+- caller
+- provider
+- model
+- prompt tokens
+- completion tokens
+- total tokens
+- latency
+- request status
 
-```text
-request_id
-trace_id
-conversation_id
-request_kind
-provider
-model
-status
-usage_source
-prompt_tokens
-completion_tokens
-total_tokens
-latency_ms
-error_type
-created_at
-```
-
-Usage 来源：
-
-```text
-provider_native:
-  Provider 返回完整 prompt/completion/total tokens。
-
-local_estimate:
-  Provider 未返回完整 usage，网关根据最终请求消息和完成文本估算。
-
-unavailable:
-  请求未得到足够信息，token 字段保持 NULL，不伪造为 0。
-```
-
-请求终态：
-
-```text
-succeeded
-provider_failed
-client_disconnected
-persistence_failed
-```
-
-持久化边界：
-
-```text
-stateful success:
-  Message + UsageRecord 同一事务提交。
-
-stateless success:
-  只保存 UsageRecord。
-
-provider_failed / client_disconnected:
-  不保存不完整 Message；
-  仍保存已知或 unavailable 的请求级 accounting。
-
-persistence_failed:
-  主事务回滚后，另行保留已消费的 usage 事实。
-```
-
-Day7 commit：
-
-```text
-bab036c feat(day7): add token usage accounting
-```
-
-最终验证：
-
-```text
-pytest -q -> 147 passed
-GitHub Actions CI -> success
-```
-
----
-
-## Cost Estimation and Usage Reporting (Chat-Day8)
-
-Chat-Day8 在 Day7 `UsageRecord` 事实表上增加版本化价格目录、不可变成本快照和只读聚合 API。
-
-### Pricing catalog
-
-默认目录：
+Cost estimation 使用：
 
 ```text
 config/pricing_catalog.json
 ```
 
-目录字段：
+并采用 `Decimal` 避免二进制浮点金额误差。
+
+`UsageCost` 是不可变历史快照，区分：
 
 ```text
-version
-currency
-unit_tokens
-prices[]:
-  provider
-  model
-  prompt_price_per_unit
-  completion_price_per_unit
+estimated
+unknown_price
+usage_unavailable
 ```
 
-匹配顺序：
+价格目录后续变化不会反向修改旧请求的历史成本事实。
+
+## 10. Observability
+
+所有请求统一支持：
 
 ```text
-provider:model exact match
-→ provider:* wildcard match
-→ unknown_price
+x-trace-id
+latency
+provider execution metadata
+RAG timing
+usage/cost record
 ```
 
-默认本地 Provider：
+如果客户端不提供 `x-trace-id`，服务端自动生成。
+
+日志用于开发和单机调试；当前项目没有伪装成已经接入完整分布式 metrics/tracing backend。
+
+## 11. Reproducible load testing
+
+压测工具：
 
 ```text
-mock:*   -> USD 0 / 1,000,000 tokens
-ollama:* -> USD 0 / 1,000,000 tokens
-```
-
-零价格表示网关外部 API 账单为零，不包含本地 GPU、电力和服务器基础设施成本。
-
-### UsageCost snapshot
-
-每个新 `UsageRecord` 对应一条 `UsageCost`：
-
-```text
-request_id
-pricing_key
-matched_pricing_key
-pricing_version
-currency
-unit_tokens
-cost_status
-prompt_price_per_unit
-completion_price_per_unit
-prompt_cost
-completion_cost
-estimated_cost
-created_at
-```
-
-`UsageCost` 保存请求发生时的价格快照；后续修改价格目录不会改变历史成本。
-
-成本状态：
-
-```text
-estimated:
-  token 已知且命中价格；显式零价格也属于 estimated。
-
-unknown_price:
-  token 已知但目录无匹配价格；金额字段为 NULL，不能写成 0。
-
-usage_unavailable:
-  token 不可用；金额字段为 NULL。
-```
-
-金额使用 `Decimal` 和 `NUMERIC(24, 12)`，API 以字符串输出，避免 JSON float 精度损失。
-
-### Atomic persistence
-
-```text
-stateful success:
-  Message + UsageRecord + UsageCost 同一事务。
-
-stateless success:
-  UsageRecord + UsageCost 同一事务。
-
-provider_failed / client_disconnected:
-  保存请求级 UsageRecord + UsageCost；
-  不保存部分 Message。
-
-persistence_failed:
-  主事务回滚；
-  补偿记录已消费 usage 与对应 cost snapshot。
-```
-
-### Usage API
-
-```text
-GET /usage/pricing
-GET /usage/records
-GET /usage/summary
-GET /usage/daily
-GET /usage/providers
-GET /usage/models
-```
-
-通用过滤条件：
-
-```text
-start_time     inclusive，必须带 timezone
-end_time       exclusive，必须带 timezone
-status
-usage_source
-cost_status
-provider
-model
-conversation_id
-request_kind
-limit
-offset
-```
-
-`cost_status=missing_snapshot` 用于查询历史 Day7 数据：这类记录没有 `UsageCost`，查询时不会使用当前价格重新估算。
-
-聚合输出包含：
-
-```text
-request_count
-statuses
-usage_sources
-prompt_tokens
-completion_tokens
-total_tokens
-total_latency_ms
-average_latency_ms
-cost_statuses
-costs_by_currency
-```
-
-不同币种不会直接混合求和，而是按 `currency` 分组。
-
-### Day8 validation
-
-```text
-Day8-A pricing/catalog/model/repository/service:
-  pytest -q -> 162 passed
-
-Day8-B sync/stream/failure/disconnect integration:
-  pytest -q -> 167 passed
-
-Day8-C usage query and aggregation API:
-  pytest -q -> 174 passed
-```
-
-手动验收确认：
-
-```text
-6 UsageRecord
-6 UsageCost snapshots
-6 stateful Messages
-stateless request no Message
-sync/stream failure no Message
-summary token/latency arithmetic correct
-provider/model/day aggregation correct
-timezone-less range rejected with HTTP 422
-client disconnect deterministic test passed
-```
-
-Git：
-
-```text
-973b5a6 fix(day8): initialize isolated default test database
-22bd6c9 feat(day8): add cost estimation and usage reporting
-GitHub Actions CI: success
-```
-## API Key Authentication (Chat-Day9)
-
-Chat-Day9 为网关增加稳定的请求方身份边界，并为 Day10 rate limit / token quota 提供 `CallerIdentity`。
-
-### Security model
-
-```text
-chat_sk_<public-prefix>_<random-secret>
-```
-
-创建流程：
-
-```text
-生成随机 secret
-→ 返回一次完整明文
-→ 使用 API_KEY_HASH_PEPPER 计算 HMAC-SHA256
-→ 数据库仅保存 id/prefix/key_hash/name/status/created_at/revoked_at
-```
-
-不会保存完整 API Key、可逆密文或 pepper。
-
-### Configuration
-
-```bash
-export API_AUTH_ENABLED=true
-export API_KEY_HASH_PEPPER="<high-entropy-server-secret>"
-```
-
-默认 `API_AUTH_ENABLED=false`，用于旧客户端平滑迁移；生产启用认证时必须配置稳定、安全的 pepper。
-
-### CLI
-
-```bash
-python -m src.app.db
-python -m src.app.auth create --name "local development"
-python -m src.app.auth list
-python -m src.app.auth revoke <key-id>
-```
-
-完整 Key 只在 `create` 时显示一次，不要粘贴到日志、聊天或 Git。
-
-### Accepted headers
-
-```http
-Authorization: Bearer <api-key>
-X-API-Key: <api-key>
-```
-
-规则：
-
-```text
-单一 Header：接受。
-两个 Header 相同：接受，method=bearer。
-两个 Header 不同：api_key_invalid。
-Basic/空 Bearer/空 X-API-Key：api_key_invalid。
-两者都缺失：api_key_missing。
-```
-
-### CallerIdentity
-
-认证成功后写入 `request.state.caller`：
-
-```text
-key_id
-key_prefix
-key_name
-authentication_method
-authenticated_at
-```
-
-`GET /auth/whoami` 只返回安全 identity 字段，不返回完整 key、hash 或 pepper。
-
-### Route boundary
-
-公开：
-
-```text
-GET /health
-GET /ready
-GET /docs
-GET /redoc
-GET /openapi.json
-GET /demo
-```
-
-受保护：
-
-```text
-POST /chat
-POST /chat/stream
-POST /v1/chat/completions
-/conversations/**
-/usage/**
-/kb/**
-/prompts
-/prompt/compare
-/runs/**
-GET /auth/whoami
-```
-
-### Error contract
-
-原生：
-
-```json
-{
-  "detail": {
-    "code": "api_key_missing",
-    "message": "API key is required"
-  }
-}
-```
-
-OpenAI-compatible：
-
-```json
-{
-  "error": {
-    "message": "API key is required",
-    "type": "authentication_error",
-    "param": null,
-    "code": "api_key_missing"
-  }
-}
-```
-
-稳定错误代码：
-
-```text
-api_key_missing
-api_key_invalid
-api_key_revoked
-api_key_auth_not_configured
-```
-
-401 返回 `WWW-Authenticate: Bearer`。
-
-### Authenticated requests
-
-原生：
-
-```bash
-curl -s -X POST http://127.0.0.1:8000/chat \
-  -H "Content-Type: application/json" \
-  -H "X-API-Key: $CHAT_API_KEY" \
-  -d '{"provider":"mock","messages":[{"role":"user","content":"authenticated"}]}'
-```
-
-OpenAI-compatible：
-
-```bash
-curl -s -X POST http://127.0.0.1:8000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $CHAT_API_KEY" \
-  -d '{"provider":"mock","model":"mock-model","messages":[{"role":"user","content":"authenticated"}]}'
-```
-
-### Historical Chat-Day9 acceptance snapshot
-
-```text
-public/protected HTTP boundary -> passed
-Bearer / X-API-Key -> passed
-missing / invalid / conflicting / revoked -> passed
-real revoke before/after request -> passed
-SQLite DB/WAL/SHM/journal plaintext scan -> passed
-repository key/pepper scan -> passed
-Day8 -> Day9 additive schema -> passed
-PYTHONPATH-independent tests -> passed
-external auth env isolation -> passed
-pytest tests/auth -q -> 20 passed
-pytest tests/db -q -> 36 passed
-pytest -q -> 204 passed
-GitHub Actions CI -> success
-```
-
----
-
-## API: Sync Chat
-
-### Sync chat (mock)
-
-```bash
-curl -s -X POST http://localhost:8000/chat \
-  -H "Content-Type: application/json" \
-  -d '{"provider":"mock","model":"mock-request-model","messages":[{"role":"user","content":"hi"}]}' | cat
-```
-
-Example response（稳定契约字段）：
-
-```json
-{
-  "trace_id": "...",
-  "session_id": null,
-  "conversation_id": null,
-  "answer": "...",
-  "metadata": {
-    "provider": "mock",
-    "model": "mock-request-model",
-    "latency_ms": 0
-  }
-}
-```
-
-### Sync chat (ollama)
-
-确保 Windows 侧有模型：
-
-```powershell
-ollama pull qwen2.5:7b
-```
-
-调用：
-
-```bash
-curl -s -X POST http://localhost:8000/chat \
-  -H "Content-Type: application/json" \
-  -d '{"provider":"ollama","model":"qwen2.5:7b","messages":[{"role":"user","content":"一句话解释RAG"}],"max_tokens":128}' | cat
-```
-
-### Sync chat (OpenAI / OpenAI-compatible)
-
-安装可选依赖并设置配置：
-
-```bash
-python -m pip install -r requirements-openai.txt
-export OPENAI_API_KEY="..."
-export OPENAI_MODEL="your-model-name"
-# 可选：export OPENAI_BASE_URL="https://your-compatible-endpoint/v1"
-```
-
-调用：
-
-```bash
-curl -s -X POST http://localhost:8000/chat \
-  -H "Content-Type: application/json" \
-  -d '{"provider":"openai","model":"your-model-name","messages":[{"role":"user","content":"Hello"}],"max_tokens":128}' | cat
-```
-
-没有配置 `OPENAI_API_KEY` 时，请求会进入 OpenAIProvider，并通过现有同步错误契约返回 HTTP 502，而不是在 schema 层返回 422。
-
----
-
-## API: Streaming (SSE)
-
-`POST /chat/stream` 返回 **SSE (Server-Sent Events)**，响应头：
-
-* `Content-Type: text/event-stream`
-
-### Event types
-
-* `meta`  : 初始化信息（至少 `trace_id/provider/model`）
-* `token` : 增量输出 token/chunk
-* `usage` : 统计信息（`trace_id/provider/model/latency_ms/token_events`）
-* `done`  : 流式结束（`[DONE]`）
-* `error` : 结构化错误（`trace_id/provider/model/latency_ms/error`）
-
-### Example
-
-```bash
-curl -N -X POST http://localhost:8000/chat/stream \
-  -H "Content-Type: application/json" \
-  -d '{"provider":"ollama","messages":[{"role":"user","content":"一句话解释RAG"}],"max_tokens":128}'
-```
-
----
-
-## Error Handling Contract
-
-### Sync `/chat` error contract (HTTP 502)
-
-同步接口下游失败用 **HTTP 502 Bad Gateway** 表达，并在 body 的 `detail` 中返回可机器解析的结构化错误。
-
-示例（强制下游失败）：
-
-```bash
-# 注意：必须影响“服务进程”（见下方备注）
-export OLLAMA_BASE_URL=http://127.0.0.1:1
-
-curl -i -X POST http://localhost:8000/chat \
-  -H "Content-Type: application/json" \
-  -d '{"provider":"ollama","messages":[{"role":"user","content":"hi"}]}'
-```
-
-示例响应：
-
-```json
-{
-  "detail": {
-    "trace_id": "f519bbe1-550c-41f3-a3ac-957a1e6dd94e",
-    "provider": "ollama",
-    "model": "qwen2.5:7b",
-    "latency_ms": 15,
-    "error": "ollama failed: [Errno 111] Connection refused"
-  }
-}
-```
-
-### Streaming `/chat/stream` error contract (SSE `event:error`)
-
-流式接口通常会先建立 SSE 通道（HTTP 200），**业务失败通过 `event:error` 传递**。
-
-示例（强制下游失败）：
-
-```bash
-export OLLAMA_BASE_URL=http://127.0.0.1:1
-
-curl -N -X POST http://localhost:8000/chat/stream \
-  -H "Content-Type: application/json" \
-  -d '{"provider":"ollama","messages":[{"role":"user","content":"hi"}],"max_tokens":8}'
-```
-
-示例输出：
-
-```text
-event: meta
-data: {"trace_id":"293e7c41-80a4-4c96-9d10-e9c22129b8bb","provider":"ollama","model":"qwen2.5:7b"}
-
-event: error
-data: {"trace_id":"293e7c41-80a4-4c96-9d10-e9c22129b8bb","provider":"ollama","model":"qwen2.5:7b","latency_ms":8,"error":"ollama failed: All connection attempts failed"}
-```
-
-### Model field guarantee
-
-为了让前端更省事、契约更硬：`model` **始终是字符串**（不会是 null）：
-
-* 真实 provider：实际模型名（如 `qwen2.5:7b`）
-* 未知/缺失：`"unknown"`
-
-适用范围：
-
-* `/chat` 的 `metadata.model`
-* `/chat/stream` 的 `meta / usage / error` 事件
-
----
-
-## SSE event format（补充说明）
-
-每个 SSE “事件块”都遵循以下格式，并以**空行结束**：
-
-```text
-event: <type>
-data: <string-or-json>
-
-```
-
-说明：
-
-* `data:` 必须是字符串；如果你传的是 dict/list，会先做 JSON 序列化再输出
-* `data` 支持多行（会拆成多条 `data:` 行），但同一个事件块仍以空行结束
-
----
-
-## Runtime debugging（运行时调试）
-
-### 1) 看日志（推荐关注这些字段）
-
-每条请求相关日志建议至少包含：
-
-* `trace_id`
-* `provider`
-* `model`
-* `latency_ms`
-
-当你排障时：
-
-* 先用响应头/响应体拿到 `trace_id`
-* 再用 `trace_id` 在日志里定位整条链路
-
-### 2) 常见坑：修改 env 后需要重启服务
-
-`export OLLAMA_BASE_URL=...` 只会影响**当前 shell 启动的进程**。
-如果 uvicorn 已经在另一个终端运行，你在新终端里 `export` 不会影响正在跑的服务。
-
-正确做法：
-
-* 在**启动 uvicorn 的那个终端**里 export，再重启服务；或
-* 停掉 uvicorn（Ctrl+C）后，在同一终端 export，再启动
-
----
-
-## Tests
-
-```bash
-python -m pip check
-python -W error -m compileall -q src scripts
-EMBEDDING_PROVIDER=mock \
-API_AUTH_ENABLED=false \
-REQUEST_RATE_LIMIT_ENABLED=false \
-TOKEN_QUOTA_ENABLED=false \
-pytest -q
-
-# Chat-Day11 local acceptance:
-# 286 passed, 0 skipped, 0 warnings
-```
-
-`pytest.ini` 使用 `-ra --strict-config --strict-markers` 并将 warning 视为 error。下方各 Chat-Day 数量是对应阶段的历史快照；当前验收结果以本节和 README 顶部为准。
-
-Chat-Day2：
-
-```text
-tests/providers/
-tests/chat/test_chat_provider_compatibility.py
-tests/stream/test_stream_provider_compatibility.py
-tests/prompt/test_prompt_compare_provider_compatibility.py
-```
-
-Chat-Day3 / Day4：
-
-```text
-tests/openai_compat/test_chat_completions.py
-tests/openai_compat/test_chat_completions_stream.py
-```
-
-Chat-Day11：
-
-```text
-tests/providers/test_provider_errors.py
-tests/providers/test_provider_resilience.py
-tests/providers/test_provider_resilience_routes.py
-tests/chat/test_chat_error_contract.py
-tests/stream/test_stream_error_contract.py
-tests/openai_compat/test_chat_completions.py
-tests/openai_compat/test_chat_completions_stream.py
-```
-
-Chat-Day12：
-
-```text
-tests/scripts/test_load_test.py
 scripts/load_test.py
 scripts/run_load_test.py
 benchmarks/configs/mock_baseline.json
+benchmarks/configs/ollama_baseline.example.json
 ```
 
-Chat-Day5 / Day6：
+支持四类场景：
 
 ```text
-tests/db/
-tests/conversations/
-tests/chat/test_chat_conversation_history.py
-tests/stream/test_stream_conversation_history.py
-```
-
-Chat-Day7：
-
-```text
-tests/usage/test_accounting.py
-tests/chat/test_chat_usage_accounting.py
-tests/stream/test_stream_usage_accounting.py
-tests/db/test_usage_record_repository.py
-tests/db/test_usage_service.py
-```
-
-Chat-Day9：
-
-```text
-tests/auth/test_api_key_keys.py
-tests/auth/test_api_key_http.py
-tests/db/test_api_key_repository.py
-tests/db/test_api_key_service.py
-```
-
-Chat-Day8：
-
-```text
-tests/cost/test_pricing_catalog.py
-tests/cost/test_estimator.py
-tests/db/test_usage_cost_repository.py
-tests/db/test_usage_cost_service.py
-tests/chat/test_chat_cost_accounting.py
-tests/stream/test_stream_cost_accounting.py
-tests/usage_api/test_usage_api.py
-```
-
-Chat-Day8 最终验收：
-
-```text
-pytest tests/chat -q
-20 passed
-
-pytest tests/conversations -q
-7 passed
-
-pytest tests/db -q
-26 passed
-
-pytest tests/stream -q
-24 passed
-
-pytest tests/usage -q
-6 passed
-
-pytest tests/cost -q
-9 passed
-
-pytest tests/usage_api -q
-7 passed
-
-pytest tests/openai_compat -q
-12 passed
-
-pytest -q
-174 passed
-
-GitHub Actions CI
-success
-```
-
-Day7/Day8 测试锁定：
-
-```text
-Provider 原生 usage 与本地估算 usage 的明确区分
-usage unavailable 不伪造 token 为 0
-成功、Provider 失败、客户端断开、持久化失败的请求级记录
-Message 表不保存请求级 usage/cost
-价格目录 exact/wildcard 匹配与版本快照
-prompt/completion 分离计价与 Decimal 固定精度
-显式零价格与 unknown_price 的区分
-UsageRecord + UsageCost 一对一原子持久化
-历史 Day7 记录允许 missing_snapshot，不按当前价格回填
-records 时间/状态/provider/model/cost_status 过滤与分页
-summary/daily/providers/models 聚合
-不同币种按 currency 分组，不直接混加
-OpenAI-compatible、旧 SSE、RAG、PromptHub、Replay 无回归
-```
-
----
-
-
----
-
-## CI (Day23)
-
-Day23 建立 GitHub Actions；Day9B 将其升级为当前完整验收入口：
-
-- workflow: `.github/workflows/ci.yml`
-- trigger: push / pull request to all branches
-- Python: 3.10
-- actions: `actions/checkout@v5`、`actions/setup-python@v6`
-- embedding: `EMBEDDING_PROVIDER=mock`
-
-CI 使用同一次 pip invocation 安装核心、测试和需要实际执行的可选集成：
-
-```bash
-python -m pip install \
-  -r requirements-dev.txt \
-  -r requirements-langchain.txt \
-  -r requirements-openai.txt
-python -m pip check
-python -W error -m compileall -q src scripts
-pytest -q
-```
-
-### CI dependency note
-
-`sentence-transformers / torch / transformers` 仍不进入完整 CI；embedding contract 通过 fake module 测试初始化、维度和 encode 行为，避免下载真实模型。真实演示使用 `requirements-embeddings.txt`。
-
-Day23 修复了一个 CI import 问题：
-
-- 问题：`src/app/kb/embeddings.py` 顶层 import `sentence_transformers`，导致 mock embedding 的 CI 也失败。
-- 修复：将 `sentence_transformers` 改为 HF provider 内部懒加载。
-- Day9B：修复 `HFEmbeddingEngine` 初始化边界，并增加 fake-module contract test。
-- 效果：CI 保持轻量，LangChain/OpenAI contracts 实际执行，真实 HF embedding 仍可按需启用。
-
----
-
-## System Design and v2 Documentation
-
-系统设计与 v2 收口文档：
-
-- `docs/system_design.md`
-- `docs/v2_demo_guide.md`
-- `docs/interview_talk_track.md`
-
-覆盖内容：
-
-- Overall architecture
-- `/chat` 同步请求链路
-- `/chat/stream` SSE 流式链路
-- RAG pipeline：ingest → chunk → embedding → Chroma → candidate_k → rerank → top_k → context → citations
-- PromptHub / A/B Compare
-- Run log / Replay
-- Error handling：sync 502 vs stream `event:error`
-- Evaluation and regression gates
-- Design trade-offs
-- Current boundaries and future work
-
-Day23 完成后，chat-api v1 可以视为阶段性完结：服务可运行、demo 可演示、测试可回归、CI 可验证、系统设计可讲解。
-
-Day30 完成后，chat-api v2 可以视为阶段性完结：RAGBackend、LangChain backend、RAG observability、Hybrid RAG、seed/eval workflow、系统设计、演示手册与面试讲解稿均已收口。
-
-## Troubleshooting
-
-* WSL 访问不到 `127.0.0.1:11434`：使用 `/etc/resolv.conf` 的 nameserver IP 作为 Windows 网关，并设置 `OLLAMA_BASE_URL`
-* `/api/tags` 返回 `{"models":[]}`：说明还没 pull 模型（Windows 执行 `ollama pull qwen2.5:7b`）
-
----
-
----
-
-## Demo（Streaming SSE）
-
-启动服务后，打开：
-
-- `http://localhost:8000/demo`
-
-功能：
-- 选择 provider：`mock`（测试）/ `ollama`（本地模型）
-- 输入 prompt，点击 Start 开始流式输出
-- 页面展示：meta（trace_id/provider/model）、output（token 拼接）、usage、error、done
-
-实现要点：
-- Demo 使用 `fetch(POST /chat/stream)` 并读取 `ReadableStream` 解析 SSE（因为 `EventSource` 仅支持 GET）
-- SSE 事件块用 `\n\n` 分隔；每块包含 `event:` 与 `data:` 行
-
-
-### Stop / Abort（Day12）
-
-Demo 现在支持 **Stop** 按钮中断流式请求（使用 `AbortController` + `fetch(..., { signal })`）：
-
-- 点击 **Stop** 会触发 `controller.abort()`，前端立即停止读取流并恢复按钮状态
-- `AbortError` 属于“用户主动取消”，不会显示为业务错误（Error 区不会红）
-- Stop 后可以直接再次 Start，开始新一轮流式请求（新的 trace_id）
-
-> 说明：当前后端 `event: usage` 主要包含 `latency_ms` 与 `token_events`；如需 `prompt_tokens/completion_tokens` 可在后端增加真实 token 统计后再展示。
-
-
-
----
-
-## Prompt Compare (Day14)
-
-新增接口：`POST /prompt/compare`
-同一输入套用两套 Prompt（A/B），返回并列结果与对比指标，并将两条运行记录写入 run log（JSONL）用于回放。
-
-### Example
-
-```bash
-curl -s -X POST http://localhost:8000/prompt/compare   -H "Content-Type: application/json"   -d '{
-    "provider":"ollama",
-    "messages":[{"role":"user","content":"解释介绍RAG"}],
-    "max_tokens":128,
-    "temperature":0.7,
-    "top_p":0.9,
-    "prompt_a":{"prompt_id":"chat","prompt_version":"v1","prompt_vars":{}},
-    "prompt_b":{"prompt_id":"qa_strict","prompt_version":"v1","prompt_vars":{}}
-  }' | cat
-```
-
-返回结构（关键字段）：
-- `compare_group_id`
-- `a/b.trace_id`
-- `a/b.metadata`（含 `prompt_id/prompt_version/provider/model/latency_ms`）
-- `metrics`（`latency_ms_*`、`output_chars_*`）
-
-### Run log (JSONL)
-
-默认日志：`runs/prompt_runs.jsonl`
-compare 每次写两条（A/B），字段包含：
-- `compare_group_id`、`variant`、`mode=compare`
-- `trace_id`、`provider/model`
-- `prompt_id/prompt_version`
-- `latency_ms`、`prompt_chars`、`output_chars`
-- `temperature/top_p/max_tokens`
-
-### Replay (offline)
-
-脚本：`scripts/replay_compare.py`
-
-```bash
-python scripts/replay_compare.py <compare_group_id>
-# 或覆盖日志路径
-python scripts/replay_compare.py <compare_group_id> --log ./runs/prompt_runs.jsonl
-```
-
----
-
-## Demo（Stream / Compare）
-
-打开：
-- `http://localhost:8000/demo`
-
-支持两种模式：
-- **Stream Chat（SSE）**：调用 `/chat/stream`
-- **Prompt Compare（A/B）**：调用 `/prompt/compare`
-
-Compare 模式会展示：
-- group_id
-- A/B 输出并列
-- metrics（latency/output diff）
-并支持 Copy Curl 复现 compare 请求。
-
----
-
-## PromptHub Query APIs (Day15)
-
-Day15 将 PromptHub 从“可用”升级为“可查询系统”，新增 3 个接口：
-
-### 1) List prompts
-
-```bash
-curl -s http://localhost:8000/prompts | cat
-```
-
-返回示例（结构）：
-
-```json
-{"prompts":{"chat":["v1","v2"],"qa_strict":["v1"]}}
-```
-
-### 2) Replay by trace_id
-
-```bash
-curl -s http://localhost:8000/runs/trace/<trace_id> | cat
-```
-
-* 找不到：HTTP 404
-* 返回包含 `records` 与 `bad_lines`
-
-### 3) Replay compare by compare_group_id
-
-```bash
-curl -s http://localhost:8000/runs/compare/<compare_group_id> | cat
-```
-
-返回包含：
-- `records`（按 A/B 排序）
-- `summary`（latency/output diff）
-- `bad_lines`
-
----
-
-### RUN_LOG_PATH（测试/调试）
-
-默认写入：`runs/prompt_runs.jsonl`
-你可以通过环境变量覆盖：
-
-```bash
-export RUN_LOG_PATH=/tmp/prompt_runs.jsonl
-```
-
-注意：环境变量只影响**启动服务的那个进程**；修改后需要重启 uvicorn 才会生效。
-
----
-
-## Knowledge Base (RAG Day16)
-
-新增 KB 模块，完成 RAG 的“检索最小闭环”（Index + Retrieve）。
-
-### 1) Ingest document
-
-```bash
-curl -s -X POST http://localhost:8000/kb/documents \
-  -H "Content-Type: application/json" \
-  -d '{"title":"t","source":"manual","text":"RAG 是 Retrieval-Augmented Generation，用于检索增强生成。"}' | cat
-```
-
-返回包含：`doc_id`、`chunks`、`metadata.trace_id/latency_ms`。
-
-### 2) Search (topK)
-
-```bash
-curl -s "http://localhost:8000/kb/search?q=RAG&top_k=3" | cat
-```
-
-返回结构（关键字段）：
-- `hits[]`: `doc_id/chunk_id/score/text/source/title`
-- `metadata.trace_id/latency_ms`
-
-### KB Environment variables
-
-* `KB_DIR` (default: `kb`)
-* `KB_CHROMA_DIR` (default: `${KB_DIR}/chroma`)
-* `KB_COLLECTION` (default: `kb_chunks`)
-* `KB_CHUNK_SIZE` (default: `800`)
-* `KB_CHUNK_OVERLAP` (default: `120`)
-* `KB_TOP_K` (default: `3`)
-* `EMBEDDING_PROVIDER` (default: `mock`, options: `mock|hf`)
-* `EMBEDDING_MODEL` (default: `maidalun1020/bce-embedding-base_v1`)
-* `EMBEDDING_DIM` (default: `512`, mock provider)
-
-### Notes
-- 测试默认使用 `EMBEDDING_PROVIDER=mock`（稳定、无外部下载）。
-- 如需真实语义检索演示，可切换为 `EMBEDDING_PROVIDER=hf` 并设置 `EMBEDDING_MODEL`（会下载/加载模型，首次较慢）。
-
----
-
-## RAG Chat (Day17)
-
-同步 `/chat` 支持检索增强（RAG），通过 KB topK 检索结果注入上下文，并返回结构化 citations。
-
-### Request fields
-
-在 `/chat` 的请求体中新增可选字段：
-
-- `use_kb` (bool, default: false)
-- `kb_top_k` (int, optional)
-
-当 `use_kb=true`：
-- 先调用 KB 检索（Chroma topK）
-- 将 hits 作为 context 注入 system prompt
-- 在响应 `metadata.rag` 中返回 `citations`（doc_id/chunk_id/source/title）
-
-### Example
-
-```bash
-# 先入库（Day16）
-curl -s -X POST http://localhost:8000/kb/documents \
-  -H "Content-Type: application/json" \
-  -d '{"text":"RAG 是 Retrieval-Augmented Generation，用于检索增强生成。","source":"manual"}' | cat
-
-# 再调用 /chat(use_kb=true)
-curl -s -X POST http://localhost:8000/chat \
-  -H "Content-Type: application/json" \
-  -d '{
-    "provider":"mock",
-    "messages":[{"role":"user","content":"什么是RAG？"}],
-    "use_kb": true,
-    "kb_top_k": 3
-  }' | cat
-```
-
-响应 `metadata` 中会包含：
-
-- `metadata.rag.enabled`
-- `metadata.rag.top_k`
-- `metadata.rag.hits`
-- `metadata.rag.citations[]`
-
----
-
-## RAG Streaming (Day18)
-
-`POST /chat/stream` 支持 RAG（检索增强生成）：请求体新增 `use_kb` / `kb_top_k`。当 `use_kb=true` 时：先 KB topK 检索 → 将命中 chunks 作为 context 注入 system prompt → 流式输出答案。
-
-### Stream RAG fields
-
-SSE 事件中会携带 `rag`：
-- `meta.data.rag`: `enabled/top_k/hits/context_chars`
-- `usage.data.rag`: `enabled/top_k/hits/context_chars/citations/error`
-- `error.data.rag`（若下游失败）: `enabled/top_k/hits/context_chars/citations_count/error`
-
-### Example
-
-```bash
-curl -N -X POST http://localhost:8000/chat/stream \
-  -H "Content-Type: application/json" \
-  -d '{
-    "provider":"ollama",
-    "messages":[{"role":"user","content":"RAG 的最小闭环包括哪些步骤？"}],
-    "prompt_id":"chat","prompt_version":"v1",
-    "use_kb": true, "kb_top_k": 3,
-    "max_tokens": 128
-  }'
-```
-
----
-
-## KB Documents Management (Day18)
-
-新增 KB 管理接口：
-
-### 1) List documents
-
-```bash
-curl -s "http://localhost:8000/kb/documents?limit=50&offset=0" | cat
-curl -s "http://localhost:8000/kb/documents?include_deleted=true" | cat
-```
-
-### 2) Delete a document
-
-```bash
-curl -s -X DELETE "http://localhost:8000/kb/documents/<doc_id>" | cat
-```
-
-删除行为：Chroma 删除（where doc_id）+ 删除 `docs/<doc_id>.md`（若存在）+ `docs.jsonl` 追加 tombstone（deleted=true）。
-
----
-
-## Demo RAG (Day18)
-
-`/demo` 增强：
-- RAG 开关 + top_k 输入框
-- 同步/流式均支持 citations 展示
-- 修复 SSE 解析（CRLF/data: 兼容 + 只解析完整块）
-- Copy Curl 输出 bash 续行 `\`（避免字面量 `\n` 引起 curl 报错）
-
----
-
-## Tests (Day18)
-
-新增 Day18 契约测试：
-- Demo：RAG UI 关键字存在（可演示能力锁死）
-- Stream：RAG meta/usage/done 顺序与 rag.citations 结构锁死（含 KB 空降级）
-- KB：documents list/delete 行为锁死（含 include_deleted）
-
-当前：
-
-```bash
-pytest -q
-# 30 passed
-```
-
----
-
-## RAG Evaluation (Day19)
-
-Day19 将 RAG 从“功能可用”推进到“可量化、可回放、可回归”的评测闭环。
-
-### What was added
-
-- `docs/kb_seed/01-11`：项目知识库种子文档。
-- `src/app/kb/index_text.py`：统一索引文本抽取，避免 `Keywords/QA Seeds/Appendix/Changelog` 污染向量库。
-- `eval/qa_rag_20.jsonl`：20 条 QA 评测集。
-- `scripts/eval_qa_rag.py`：离线评测脚本。
-- `src/app/kb/rag_context.py`：`build_rag_context()` + query-aware `rerank_hits()`。
-- `KB_CANDIDATE_K=50`：先召回候选池，再基于 query/title/text 做轻量 rerank。
-
-### KB Seed structure
-
-每篇 `docs/kb_seed/*.md` 统一结构：
-
-```md
-正文（会入库）
----
-# Keywords（只给人看，不入库）
-# QA Seeds（只给评测/维护，不入库）
-```
-
-入库时 `extract_index_text()` 只保留正文。截断规则：
-
-- 优先遇到独立一行 `---` 截断；
-- 如果没有 `---`，遇到一级标题 `# Keywords`、`# QA Seeds`、`# Appendix`、`# Changelog` 截断。
-
-### Run evaluation
-
-```bash
-python scripts/eval_qa_rag.py \
-  --qa eval/qa_rag_20.jsonl \
-  --out eval/results/rag_eval_20.jsonl \
-  --summary eval/results/rag_eval_20_summary.json \
-  --provider ollama
+native_sync
+native_stream
+openai_sync
+openai_stream
 ```
 
 输出：
 
-- `eval/results/rag_eval_20.jsonl`：逐题证据，包含 `qid/question/answer/trace_id/rag/citations/answer_score/citation_score/effective_rag/latency_ms`。
-- `eval/results/rag_eval_20_summary.json`：汇总指标。
+- throughput / req/s
+- P50 / P95 / P99 latency
+- streaming TTFT
+- error rate
+- HTTP status distribution
+- error classification
+- per-request raw samples
 
-### Metrics
+成功条件不仅是 HTTP 2xx：
 
-- `answer_hit_rate`：关键词命中，并且回答没有“不确定/需要更多上下文”等拒答模板。
-- `citation_hit_rate`：有 citations，且 citation.source 命中 expected_sources。
-- `title_hit_rate`：诊断指标，citation.title 是否命中 expected_titles。
-- `effective_rag_rate`：`rag.enabled=true && rag.hits>0 && context_chars>0`。
-- `avg/p50/p95 latency_ms`：来自 `/chat` 返回的 metadata。
+- sync 必须满足 JSON contract
+- native SSE 必须正常收到 `done`
+- OpenAI-compatible SSE 必须收到 `[DONE]`
+- SSE `error`、错误 JSON、流提前结束都计失败
 
-### Final Day19 result
+### Mock baseline
 
-最终 QA20 验收结果：
-
-```text
-total = 20
-success = 20
-failed = 0
-answer_hit_rate = 95.0%
-citation_hit_rate = 100.0%
-effective_rag_rate = 100.0%
-avg_latency_ms ≈ 1953ms
-```
-
-### Lessons from Day19
-
-Day19 中间经历了多次真实工程问题，并逐个修复：
-
-- 入库 payload 用错字段：`markdown` → `text`，通过 `/openapi.json` 定位 422。
-- shell heredoc 管道写错，固定为 `python ... | curl -d @-` 模板。
-- 手动删除 `kb/docs/*.md` 造成状态不一致，改为 API tombstone + Chroma delete。
-- `Keywords/QA Seeds` 被索引导致召回污染，用 `extract_index_text()` 固化规则。
-- md 已更新但 Chroma 仍是旧索引，清理 Chroma 后重新入库验证。
-- `candidate_k/rerank/top_k` chunk 原始向量排序靠后，用 `KB_CANDIDATE_K=50` + query-aware rerank 修复。
-- rerank 一度过拟合到 `RAG in Chat/Stream`，改为 query 触发的专题 title boost。
-- 关键词评测一度误判“不确定回答”为通过，加入 uncertain 拦截。
-- “没有找到记录所以 404”一度被 uncertainty pattern 误杀，收窄拒答模板。
-- Git 提交时区分源码与运行时产物：不提交 `kb/chroma/`、`kb/docs/`、`kb/docs.jsonl`、`eval/results/`。
-- Day19 同时补充了 RAG 评测相关回归点：KB Seed 截断规则、uncertain answer guard、citation/title 命中口径、candidate_k + query-aware rerank，避免 QA Seeds 污染、关键词假阳性和 rerank 全局偏置。
-
----
-
-## Demo Storyline (Day21)
-
-Day21 不新增后端接口，也不修改核心业务逻辑，而是把已有能力整理成一条 Day22 可演示故事线：
+固定条件：
 
 ```text
-Health
-→ PromptHub
-→ RAG Sync Chat
-→ RAG Streaming SSE
-→ Prompt A/B Compare
-→ Replay
-→ Error Demo
-→ Eval Report
+Python 3.10.19
+single Uvicorn worker
+isolated SQLite
+MockProvider
+rate limit disabled
+token quota disabled
+APP_LOG_LEVEL=WARNING
+clean Git commit
+3 repeated runs
 ```
 
-演示文档：
+三次共 **3,960 个测量请求**。
 
-- `docs/demo_storyline_day22.md`
+| Scenario | C | Requests | Mean RPS [range] | P50 / P95 ms | TTFT P50 / P95 ms | Combined error |
+|---|---:|---:|---:|---:|---:|---:|
+| `native-sync-c1` | 1 | 300 | 179.527 `[164.901–187.788]` | 4.991 / 6.689 | — | 0% |
+| `native-sync-c10` | 10 | 900 | 221.261 `[218.388–226.150]` | 8.691 / 149.267 | — | 0% |
+| `native-sync-c50` | 50 | 1,500 | 201.467 `[193.566–207.942]` | 169.073 / 563.727 | — | 49/1,500 = 3.267% |
+| `native-stream-c1` | 1 | 60 | 2.507 `[2.474–2.524]` | 399.897 / 413.824 | 6.252 / 8.222 | 0% |
+| `native-stream-c10` | 10 | 150 | 25.249 `[25.043–25.538]` | 369.962 / 433.856 | 2.261 / 15.402 | 0% |
+| `native-stream-c25` | 25 | 300 | 57.855 `[57.441–58.371]` | 382.950 / 517.925 | 2.367 / 45.854 | 0% |
+| `openai-sync-c10` | 10 | 600 | 189.509 `[147.730–232.280]` | 9.271 / 138.119 | — | 0% |
+| `openai-stream-c10` | 10 | 150 | 23.945 `[23.705–24.260]` | 413.931 / 432.492 | 13.803 / 22.360 | 0% |
 
-该文档包含每一步的命令、预期输出和讲解点，方便在面试或复盘时按顺序展示完整 LLM 应用工程闭环。
+总体：
 
-Day21 不需要新增契约测试，因为没有改变 API contract、schema、RAG 行为或运行时逻辑；仅通过现有回归测试确认系统未受影响：
+```text
+3,960 requests
+49 failures
+overall error rate = 1.237%
+```
+
+除 `native-sync-c50` 外，其余七个场景三次均为 0 错误。
+
+C50 的 49 个失败全部来自持久化阶段 SQLAlchemy QueuePool 耗尽，未混入 Provider 或协议错误。这说明当前单 worker + SQLite 配置的高并发写入边界已经被压测真实暴露。
+
+因此不能声称系统最大并发是 50，也不能把上述数字泛化成生产容量。更准确的结论是：
+
+> 在当前单机 Mock baseline 中，C10 表现稳定；C50 已出现明显 tail latency 和数据库连接池失败，过载拐点位于本测试矩阵的 C10–C50 区间。
+
+流式 MockProvider 的完整响应延迟包含确定性逐 token sleep，只用于验证 Gateway / SSE / persistence 行为，不代表真实模型推理速度。
+
+完整压测说明：
+
+```text
+benchmarks/README.md
+```
+
+运行：
 
 ```bash
-pytest -q
-# 44 passed
+python scripts/run_load_test.py \
+  --config benchmarks/configs/mock_baseline.json
 ```
 
+## 12. Docker release
 
-## Git hygiene
-
-以下是运行时产物，不建议提交：
-
-```gitignore
-kb/chroma/
-kb/docs/
-kb/docs.jsonl
-eval/results/
-eval/kb_seed_manifest.jsonl
-backup_kb_reset/
-```
-
-建议提交：
-
-- `src/**` 源码；
-- `docs/kb_seed/*.md` 源文档；
-- `eval/qa_rag_20.jsonl` 评测集；
-- `scripts/eval_qa_rag.py` 评测脚本；
-- README / HANDOFF / day logs。
-
-## RAG Evaluation Report & Regression Gates (Day20)
-
-Day20 将 Day19 的 RAG QA20 离线评测结果整理成 Markdown 报告，并增加回归门槛。
-
-### Generate report
-
-```bash
-python scripts/build_eval_report.py \
-  --results eval/results/rag_eval_20.jsonl \
-  --summary eval/results/rag_eval_20_summary.json \
-  --out eval/reports/rag_eval_report.md \
-  --strict
-```
-
----
-
-## v1 Closure: CI + System Design (Day23)
-
-Day23 对 chat-api v1 做工程化收口：
-
-- 新增 `requirements.txt`，统一基础依赖安装。
-- 新增 `.github/workflows/ci.yml`，push/PR 自动运行 `pytest -q`。
-- 修复 CI 中 `sentence-transformers` 顶层 import 导致的 mock 测试失败，改为 HF provider 懒加载。
-- 新增 `docs/system_design.md`，将项目从功能列表整理成系统设计说明。
-- 最新 GitHub Actions 通过。
-- 本地测试保持 `44 passed`。
-
-### v1 accepted capabilities
+发布镜像固定：
 
 ```text
-FastAPI service
-mock / ollama provider
-sync chat / SSE stream
-PromptHub
-Prompt A/B Compare
-Run log / Replay
-KB ingest / search / delete
-RAG sync / stream
-candidate_k + query-aware rerank
-QA20 RAG eval
-Markdown report + strict gates
-Day22 demo storyline
-GitHub Actions CI
-System design document
+Python 3.10.19
+Debian bookworm slim
+non-root uid/gid 10001
+single Uvicorn worker
 ```
 
-Day24 后进入 v2：LangChain backend + Advanced RAG + RAG Eval App。
+启动阶段：
 
----
+1. 检查持久化目录写权限；
+2. 幂等初始化数据库 schema；
+3. 启动 Uvicorn；
+4. `/ready` 检查数据库 readiness。
 
-## RAG Backend Skeleton (Day24 / v2)
-
-Day24 是 chat-api v2 的起点，目标不是立即替换现有 RAG 主链路，而是先建立可插拔 RAG backend 架构。
-
-### Branch
+Compose named volumes：
 
 ```text
-v2-langchain-rag
+chat_api_data
+chat_api_runs
+chat_api_kb
 ```
 
-### Added files
+Docker smoke 覆盖六条 HTTP 链路：
 
 ```text
-requirements-langchain.txt
-src/app/rag/__init__.py
-src/app/rag/base.py
-src/app/rag/schemas.py
-src/app/rag/native_backend.py
-src/app/rag/langchain_backend.py
-src/app/rag/factory.py
-tests/rag/test_rag_backend_factory.py
-```
-
-### RAG_BACKEND
-
-新增环境变量：
-
-```bash
-export RAG_BACKEND=native
-# or
-export RAG_BACKEND=langchain
-```
-
-当前行为：
-
-- `native`：默认值，封装现有 embedding → Chroma → rerank → context pipeline。
-- `langchain`：Day24 只提供 skeleton + optional dependency lazy loading；正式 LangChain retriever 放到 Day26+。
-
-### Why skeleton first?
-
-Day24 没有立刻改 `/chat` 和 `/chat/stream` 主链路，原因是：
-
-- 这两个接口是 v1 最核心稳定链路；
-- 直接改动会影响 `metadata.rag` 和 SSE `rag` 契约；
-- sync / stream 两套 RAG 分支都需要同步验证；
-- QA20 和 report gate 也需要重新确认。
-
-因此 Day24 只收一个稳定目标：
-
-```text
-RAG backend abstraction + factory tests + optional LangChain dependency + CI on feature branches
-```
-
-### Tests
-
-```bash
-pytest tests/rag/test_rag_backend_factory.py -q
-# 3 passed
-
-pytest -q
-# 47 passed
-```
-
-### CI
-
-Day24 将 CI 触发范围从只跑 `master` 扩展为所有分支 push 都跑：
-
-```yaml
-on:
-  push:
-    branches: ["**"]
-  pull_request:
-    branches: [ master ]
-```
-
-`v2-langchain-rag` 分支 GitHub Actions 已通过。
-
-### Day25 / Day26 completed
-
-Day25 已把 `routes_chat.py` 接入 `get_rag_backend().build_context()`，统一 `/chat` 与 `/chat/stream` 的 RAG 构建逻辑，同时保持现有输出契约不变。
-
-Day26 已实现 `RAG_BACKEND=langchain` 的真实检索能力：通过 `langchain_chroma.Chroma` 查询现有 Chroma KB，并复用项目自己的 embedding engine，保证查询向量空间与入库向量空间一致。
-
----
-
-## RAGBackend Route Integration (Day25 / v2)
-
-Day25 将 Day24 的 RAG backend abstraction 正式接入主聊天链路。
-
-```text
-2c672b6 refactor(day25): route chat rag through backend
-```
-
-Day25 之后，`/chat` 与 `/chat/stream` 都调用同一个 backend 接口：
-
-```python
-rag_backend = get_rag_backend()
-rag_result = rag_backend.build_context(query=query, top_k=top_k)
-```
-
-route 层只负责把 `RAGContextResult` 转回既有 API/SSE contract。
-
-验证：
-
-```bash
-pytest tests/chat/test_chat_rag_contract.py -q
-pytest tests/stream/test_stream_rag_contract.py -q
-pytest -q
-```
-
----
-
-## LangChain RAG Backend Retrieval (Day26 / v2)
-
-Day26 让 `RAG_BACKEND=langchain` 从 skeleton 变成真正的检索后端。
-
-```text
-c172523 feat(day26): implement langchain rag backend retrieval
-1e19e3c test(day26): assert langchain rag backend marker
-```
-
-实现方式：
-
-```text
-get_embedding_engine(settings)
-→ ProjectEmbeddings
-→ langchain_chroma.Chroma
-→ similarity_search_with_score
-→ Hit
-→ rerank_hits
-→ build_rag_context
-→ RAGContextResult
-```
-
-LangChain backend 仍保持统一输出：
-
-```text
-RAGContextResult.extra = {
-  "backend": "langchain",
-  "vectorstore": "langchain_chroma"
-}
-```
-
-验证：
-
-```bash
-pytest tests/rag/test_langchain_backend_contract.py -q
-# 2 passed
-
-RAG_BACKEND=langchain pytest tests/chat/test_chat_rag_contract.py -q
-# 2 passed
-
-RAG_BACKEND=langchain pytest tests/stream/test_stream_rag_contract.py -q
-# 2 passed
-
-pytest -q
-# 49 passed
-```
-
-注意：LangChain / Chroma 测试可能修改 `kb/chroma/chroma.sqlite3`，这是运行时产物，不要提交：
-
-```bash
-git restore kb/chroma/chroma.sqlite3
-```
-
-Day27 已完成 RAG Observability：backend marker + latency breakdown + trace 增强。
-
----
-
-## RAG Observability (Day27 / v2)
-
-Day27 adds observability to the RAG pipeline without changing request fields.
-
-### Exposed fields
-
-RAG responses now include:
-
-```text
-backend
-vectorstore
-embedding_ms
-retrieval_ms
-rerank_ms
-context_build_ms
-total_ms
-```
-
-### Where fields appear
-
-`POST /chat` exposes them in:
-
-```text
-metadata.rag
-```
-
-`POST /chat/stream` exposes them in:
-
-```text
-meta.rag
-usage.rag
-error.rag
-```
-
-### Backend extra
-
-Native backend:
-
-```text
-extra = {
-  "backend": "native",
-  "embedding_ms": ...,
-  "retrieval_ms": ...,
-  "rerank_ms": ...,
-  "context_build_ms": ...,
-  "total_ms": ...
-}
-```
-
-LangChain backend:
-
-```text
-extra = {
-  "backend": "langchain",
-  "vectorstore": "langchain_chroma",
-  "embedding_ms": ...,
-  "retrieval_ms": ...,
-  "rerank_ms": ...,
-  "context_build_ms": ...,
-  "total_ms": ...
-}
-```
-
-For LangChain backend, embedding is currently included inside `similarity_search_with_score()`, so it is counted in `retrieval_ms`.
-
-### Tests
-
-Day27 adds / updates:
-
-```text
-tests/rag/test_native_backend_observability.py
-tests/rag/test_langchain_backend_contract.py
-tests/rag/test_langchain_route_observability.py
-tests/chat/test_chat_rag_contract.py
-tests/stream/test_stream_rag_contract.py
-```
-
-Local validation when LangChain optional deps are installed:
-
-```bash
-pytest -q
-# 52 passed
-```
-
-CI remains lightweight because LangChain-specific tests are protected with `pytest.importorskip(...)`.
-
-### Runtime artifact
-
-RAG / Chroma tests may modify:
-
-```text
-kb/chroma/chroma.sqlite3
-```
-
-Do not commit it:
-
-```bash
-git restore kb/chroma/chroma.sqlite3
-```
-
----
-
-## Hybrid RAG Fusion Rerank (Day28 / v2)
-
-Day28 upgrades the RAG ranking stage from vector-only rerank to lightweight Hybrid RAG:
-
-```text
-vector retrieval
-→ lexical scoring
-→ fusion rerank
-→ top_k context
-```
-
-The request contract is unchanged. Existing `/chat` and `/chat/stream` clients do not need to change request fields.
-
-### Fusion signals
-
-Hybrid rerank combines:
-
-```text
-1. vector score：semantic retrieval score from Chroma / LangChain Chroma
-2. lexical score：query token overlap, title/source/text match, exact phrase bonus
-3. query-aware rule bonus：the existing topic-specific rerank rules from Day19/Day20
-```
-
-Current fixed weights:
-
-```text
-retrieval_mode = "hybrid"
-fusion = "vector_lexical"
-vector_weight = 0.7
-lexical_weight = 0.3
-```
-
-### API observability
-
-`POST /chat` exposes Hybrid RAG fields in `metadata.rag`.
-
-`POST /chat/stream` exposes the same fields in `meta.rag` / `usage.rag` / `error.rag`.
-
-Fields:
-
-```text
-backend
-vectorstore
-retrieval_mode
-fusion
-vector_weight
-lexical_weight
-embedding_ms
-retrieval_ms
-rerank_ms
-context_build_ms
-total_ms
-```
-
-### Tests
-
-Day28 adds / updates:
-
-```text
-tests/kb/test_hybrid_rag_rerank.py
-tests/rag/test_native_backend_observability.py
-tests/rag/test_langchain_backend_contract.py
-tests/chat/test_chat_rag_contract.py
-tests/stream/test_stream_rag_contract.py
-tests/rag/test_langchain_route_observability.py
-```
-
-Local validation:
-
-```bash
-pytest -q
-# 57 passed
-```
-
-### Day28 QA20 result
-
-After rebuilding live KB from `docs/kb_seed/01-11` and running QA20:
-
-```text
-answer_hit_rate = 90.0%
-citation_hit_rate = 100.0%
-effective_rag_rate = 100.0%
-title_hit_rate = 95.0%
-avg_latency_ms = 1958
-p50_latency_ms = 1706
-p95_latency_ms = 5921
-failed = 0
-```
-
-Strict report gate:
-
-```bash
-python scripts/build_eval_report.py \
-  --results eval/results/rag_eval_20_day28_hybrid.jsonl \
-  --summary eval/results/rag_eval_20_day28_hybrid_summary.json \
-  --out eval/reports/rag_eval_report_day28_hybrid.md \
-  --strict
-# All regression gates passed!
-```
-
-### Day28 troubleshooting notes
-
-Day28-C exposed two important evaluation pitfalls:
-
-1. **Live KB state matters.** The first Day28 eval failed because the live KB still contained demo documents, so citations pointed to `source=demo` instead of `docs/kb_seed/*`.
-2. **Citation scoring should match evaluation intent.** QA20 uses source categories such as `kb_seed`, while runtime citations contain full paths such as `docs/kb_seed/07_KB Ingest & Search.md`. Day28 fixed `scripts/eval_qa_rag.py` to use normalized substring matching and title/source fallback, instead of brittle exact matching.
-
-### Runtime artifact note
-
-Do not commit runtime KB / eval outputs:
-
-```bash
-git restore kb/chroma kb/docs.jsonl kb/docs 2>/dev/null || true
-git restore eval/reports/rag_eval_report_day28_hybrid.md 2>/dev/null || true
-```
-
-Usually do not commit:
-
-```text
-eval/results/rag_eval_20_day28_hybrid.jsonl
-eval/results/rag_eval_20_day28_hybrid_summary.json
-```
-
----
-
-## KB Seed and RAG Eval Workflow (Day29 / v2)
-
-Day29 turns the manual Day28-C KB rebuild and QA20 evaluation steps into repeatable scripts.
-
-### Seed KB
-
-Script:
-
-```text
-scripts/seed_kb.py
-```
-
-Main capabilities:
-
-```text
-1. Select docs/kb_seed/01-11 by default
-2. Keep source as docs/kb_seed/<filename>.md
-3. Extract title from filename
-4. Support --dry-run
-5. Support --reset-runtime --yes
-6. Support --ingest through POST /kb/documents
-7. Write eval/kb_seed_manifest.jsonl
-```
-
-Dry run:
-
-```bash
-python scripts/seed_kb.py --dry-run
-```
-
-Reset runtime artifacts. Stop uvicorn before this step:
-
-```bash
-python scripts/seed_kb.py --reset-runtime --yes
-```
-
-After restarting uvicorn, ingest seed docs:
-
-```bash
-python scripts/seed_kb.py --ingest
-```
-
-### Run full QA20 workflow
-
-Script:
-
-```text
-scripts/run_rag_eval_workflow.py
-```
-
-The workflow performs:
-
-```text
-health check
-→ seed KB
-→ provider warmup
-→ run eval_qa_rag.py
-→ build_eval_report.py --strict
-→ print summary
-```
-
-Example:
-
-```bash
-python scripts/run_rag_eval_workflow.py \
-  --provider ollama \
-  --results eval/results/rag_eval_20_day29_workflow.jsonl \
-  --summary eval/results/rag_eval_20_day29_workflow_summary.json \
-  --report eval/reports/rag_eval_report_day29_workflow.md
-```
-
-Runtime reset is intentionally separated from eval. Stop uvicorn first:
-
-```bash
-python scripts/run_rag_eval_workflow.py --reset-runtime --yes
-```
-
-Then restart uvicorn and rerun the workflow without `--reset-runtime`.
-
-### Provider warmup
-
-Day29-C adds provider warmup before formal QA20 evaluation:
-
-```text
+GET  /ready
+GET  /health
 POST /chat
-provider = ollama
-use_kb = false
-max_tokens = 16
-temperature = 0.0
+POST /chat/stream
+POST /v1/chat/completions
+POST /v1/chat/completions stream=true
 ```
 
-This avoids Ollama cold-start / first-request latency spikes from polluting the 20-sample p95 gate.
+CI 中 Docker build / health / protocol smoke 与 Python full test suite 分成独立 job。
 
-You can skip it explicitly:
+## 13. Testing and CI
 
-```bash
-python scripts/run_rag_eval_workflow.py --skip-warmup
-```
-
-### Day29 final QA20 result
-
-After seed workflow + warmup:
+本轮发布验收基线：
 
 ```text
-total = 20
-success = 20
-failed = 0
-answer_hit_rate = 90.0%
-citation_hit_rate = 100.0%
-effective_rag_rate = 100.0%
-title_hit_rate = 95.0%
-avg_latency_ms = 1495
-p50_latency_ms = 1396
-p95_latency_ms = 2750
+Python 3.10.19
+pip check -> passed
+warnings-as-errors compile -> passed
+pytest -> 322 passed
+skipped -> 0
+warnings -> 0
+Docker image build -> passed
+container -> healthy
+native/OpenAI sync/stream smoke -> 6/6 passed
+named-volume persistence -> passed
+container -> host Ollama -> HTTP 200
 ```
 
-Strict report gate:
+GitHub Actions 主要包含：
 
 ```text
-All regression gates passed!
+Full test suite (Python 3.10)
+Docker release smoke test
 ```
 
-### Day29 tests
+测试覆盖：
 
-Day29 adds:
+- Provider factory / provider boundary
+- Provider error classification
+- retry / fallback
+- streaming first-token boundary
+- native and OpenAI-compatible contracts
+- Conversation persistence
+- context window
+- Usage / Cost
+- authentication
+- rate limit / token quota
+- RAG backend
+- Docker release artifacts
+- load-test tooling
+
+## 14. Repository layout
 
 ```text
-tests/scripts/test_seed_kb.py
-tests/scripts/test_run_rag_eval_workflow.py
+chat-api/
+├── src/app/
+│   ├── api/                  # HTTP routes
+│   ├── auth/                 # API key auth
+│   ├── conversations/        # history / context window
+│   ├── cost/                 # pricing / estimation
+│   ├── db/                   # SQLAlchemy models / repositories
+│   ├── kb/                   # KB primitives
+│   ├── limits/               # rate limit / token quota
+│   ├── llm/providers/        # Provider abstraction / resilience
+│   ├── rag/                  # Native / LangChain RAG backends
+│   ├── services/             # application services
+│   └── usage/                # usage accounting
+├── tests/
+├── scripts/
+├── benchmarks/
+├── config/
+├── docs/
+├── Dockerfile
+├── docker-compose.yml
+├── constraints.txt
+└── .env.example
 ```
 
-Validation:
+## 15. Known boundaries
 
-```bash
-pytest -q
-# 63 passed
-```
+这些边界是显式工程选择，不作为未完成承诺：
 
-### Runtime artifact note
+### Database
 
-Do not commit workflow outputs:
+当前发布单元采用 SQLite，适用于：
+
+- 本地开发
+- 单机 demo
+- 简历项目
+- 可复现工程基线
+
+当前未引入：
+
+- PostgreSQL
+- Alembic production migration workflow
+- 多实例数据库部署
+
+更高写并发场景应迁移 PostgreSQL 后重新建立性能基线。
+
+### Horizontal scaling
+
+当前：
 
 ```text
-eval/kb_seed_manifest.jsonl
-eval/results/
-eval/reports/
-kb/chroma/
-kb/docs/
-kb/docs.jsonl
-```
----
-
-## v2 Closure (Day30)
-
-Day30 completes the `v2-langchain-rag` phase as a packaged, demonstrable, and interview-ready version.
-
-### What Day30 added
-
-Day30 is documentation and acceptance closure, not a new feature day.
-
-Added / completed docs:
-
-```text
-docs/system_design.md
-docs/v2_demo_guide.md
-docs/interview_talk_track.md
+single worker
+single-node deployment
 ```
 
-### Documentation roles
+没有声称支持：
 
-```text
-docs/system_design.md
-  系统设计文档：讲架构、模块关系、RAG pipeline、设计取舍、当前边界与未来扩展。
+- 多实例共享 limiter
+- distributed quota
+- distributed cache
+- Kubernetes horizontal scaling
 
-docs/v2_demo_guide.md
-  演示手册：按顺序跑 health、sync chat、stream、RAG、Hybrid metadata、Prompt Compare、Replay、eval workflow。
+### Observability backend
 
-docs/interview_talk_track.md
-  面试讲解稿：包含 30 秒 / 1 分钟 / 3 分钟项目介绍、RAG 讲法、真实排障案例、常见问答和简历 bullet。
-```
+当前有：
 
-### Final v2 accepted capabilities
+- trace id
+- latency logs
+- request/provider/RAG metadata
+- UsageRecord / UsageCost
 
-```text
-FastAPI service
-mock / ollama provider
-sync /chat
-SSE /chat/stream
-PromptHub
-Prompt A/B Compare
-Run Log / Replay
-KB ingest / search / delete
-RAG sync / stream
-candidate_k + query-aware rerank
-RAGBackend abstraction
-native / langchain backend
-RAG observability timing
-Hybrid RAG fusion rerank
-QA20 RAG eval
-Strict regression gates
-KB seed workflow
-RAG eval workflow
-Provider warmup for local Ollama eval
-GitHub Actions CI
-System design document
-Demo guide
-Interview talk track
-```
+未引入完整：
 
-### Final validation commands
+- Prometheus
+- OpenTelemetry backend
+- centralized tracing backend
 
-Run tests:
+### Explicit non-goals
 
-```bash
-pytest -q
-# 63 passed
-```
+本项目不继续扩展：
 
-Run reproducible local RAG acceptance workflow:
+- Multi-Agent
+- Agent workflow
+- GraphRAG
+- MCP
+- semantic cache
+- multi-tenant RBAC
+- distributed Chroma
+- billing platform
 
-```bash
-# Stop uvicorn first
-python scripts/run_rag_eval_workflow.py --reset-runtime --yes
+这些能力属于其他系统或未来独立项目，不进入当前 `chat-api` 发布范围。
 
-# Restart uvicorn
-WIN_IP=$(grep -m 1 nameserver /etc/resolv.conf | awk '{print $2}')
-export OLLAMA_BASE_URL="http://$WIN_IP:11434"
-python -m uvicorn src.app.main:app --reload --port 8000
+## 16. Documentation
 
-# In another terminal
-python scripts/run_rag_eval_workflow.py --provider ollama
-```
+深入材料：
 
-Expected strict gate:
+- [`docs/system_design.md`](docs/system_design.md) — 系统架构、关键设计与工程权衡
+- [`docs/v2_demo_guide.md`](docs/v2_demo_guide.md) — 可复现演示流程
+- [`docs/interview_talk_track.md`](docs/interview_talk_track.md) — 面试项目讲解材料
+- [`benchmarks/README.md`](benchmarks/README.md) — 压测方法、指标口径和复现规则
+- [`HANDOFF.md`](HANDOFF.md) — 历史开发状态、关键提交与收口记录
 
-```text
-answer_hit_rate >= 0.90
-citation_hit_rate >= 0.95
-effective_rag_rate >= 0.95
-title_hit_rate >= 0.85
-p95_latency_ms <= 6000
-failed_count == 0
-```
+## 17. Release status
 
-Latest validated result:
+`v2-langchain-rag-plus` 当前已经完成：
 
-```text
-total = 20
-success = 20
-failed = 0
-answer_hit_rate = 0.90
-citation_hit_rate = 1.00
-effective_rag_rate = 1.00
-title_hit_rate = 0.95
-avg_latency_ms = 1495
-p50_latency_ms = 1396
-p95_latency_ms = 2750
-All regression gates passed!
-```
+- 功能实现
+- full test suite
+- zero-warning / zero-skip release baseline
+- provider resilience fault-path tests
+- reproducible mock load testing
+- Docker build / health / persistence / smoke
+- README / system design / demo / interview documentation
 
-### v2-plus Current Status
-
-本节以上内容保留了各阶段的历史设计与验收快照。当前能力、严格测试结果、项目边界和下一步以 README 顶部的 `v2-plus 当前状态` 为唯一事实源，避免在文档尾部维护第二份易过期状态。
+功能范围已冻结。剩余操作只包括将该分支合并到 `master` 并创建 release tag；这些仓库发布步骤不会重新打开功能开发范围。

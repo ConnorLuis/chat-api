@@ -470,19 +470,24 @@ Provider resilience、Day12 压测和 Day13 Docker 发布收口均已完成。�
 
 Alembic/PostgreSQL、多实例分布式 limiter/quota 和完整 metrics/tracing backend 属于未来演进边界，不作为本轮 chat-api 简历项目收口的必做项。大路由拆分也不是 Day11 遗留缺陷；只有后续改动确实受阻时，才允许做保持行为不变的独立重构。
 
-## 10. 下一步顺序
+## 10. 发布封板状态
 
-### Chat-Day12：并发压测（completed）
+Chat-Day12 并发压测、Chat-Day13 Docker 发布单元以及最终状态文档均已完成。
 
-- 实现、Python 3.10 全量回归、目标分支 CI 和三次 clean-commit mock baseline 均已完成；
-- README/HANDOFF 已记录实际请求数、并发度、RPS、P50/P95、错误率、TTFT 和连接池瓶颈；
-- Ollama 真实模型基准是可选加分项，只有注明 CPU/GPU、显存、模型 tag 和量化精度后才可引用，不阻塞收口。
+- Day12 实现提交 `a23c92e feat(day12): add reproducible load testing`，GitHub Actions run `32032592555` passed；
+- 三次 clean-commit mock baseline 共 3,960 个测量请求，性能数字与 SQLite/QueuePool 高并发边界已记录；
+- Day13 实现提交 `5c75a35 chore(day13): add docker release packaging`，GitHub Actions run `32107582238` 的 Python / Docker 两个 job 均 passed；
+- 最终状态文档提交 `5d69b98 docs(day13): record final release acceptance` 对应 GitHub Actions run `32108537996`，两个 job 再次 passed；
+- `chat-api` 的功能开发、性能基线和 Docker 发布验收已经结束，不再安排新的 Chat-Day 功能开发。
 
-### Chat-Day13：Docker 与发布收口（completed）
+当前只剩仓库级发布动作：
 
-- 实现提交 `5c75a35`、目标 WSL 本地验收和 GitHub Actions 远端双 job 均已完成；
-- 本次只提交 README/HANDOFF 最终状态，随后验证该文档提交触发的 CI；
-- CI 通过后 `chat-api` 不再安排新的 Chat-Day，转入面试复习、演示和必要维护。
+1. 将 README 整理为最终项目首页，并完成最后一次文档 CI；
+2. 创建 `v2-langchain-rag-plus -> master` PR；
+3. 合并后验证 `master`；
+4. 创建最终 release tag。
+
+上述动作不重新打开 Alembic/PostgreSQL、路由大拆分、Multi-Agent、GraphRAG、MCP、分布式 limiter/quota 等范围。
 
 ## 11. 关键提交
 
@@ -507,4 +512,4 @@ ff47733 docs(day12): record mock load-test baseline
 
 Day9B cleanup implementation commit：`09a2222 chore(day9b): close repository and CI hygiene`。
 
-Day13 最终实现提交为 `5c75a35 chore(day13): add docker release packaging`，远端验收为 GitHub Actions run `32107582238`，两个 job 均 passed。最终状态文档提交触发的 CI 通过后，`chat-api` v2-plus 即保持 closed 状态。
+Day13 最终实现提交为 `5c75a35 chore(day13): add docker release packaging`，远端验收为 GitHub Actions run `32107582238`，两个 job 均 passed。最终状态文档提交 `5d69b98 docs(day13): record final release acceptance` 对应 GitHub Actions run `32108537996`，两个 job 再次 passed。`chat-api` v2-plus 功能与发布实现保持 closed；后续只进行 README 封板、合并 `master` 和 release tag。
