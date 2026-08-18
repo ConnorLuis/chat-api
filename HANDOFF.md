@@ -480,7 +480,7 @@ Chat-Day12 并发压测、Chat-Day13 Docker 发布单元以及最终状态文档
 - 最终状态文档提交 `5d69b98 docs(day13): record final release acceptance` 对应 GitHub Actions run `32108537996`，两个 job 再次 passed；
 - `chat-api` 的功能开发、性能基线和 Docker 发布验收已经结束，不再安排新的 Chat-Day 功能开发。
 
-当前只剩仓库级发布动作：
+本次仓库级发布封板流程为：
 
 1. 将 README 整理为最终项目首页，并完成最后一次文档 CI；
 2. 创建 `v2-langchain-rag-plus -> master` PR；
@@ -512,4 +512,4 @@ ff47733 docs(day12): record mock load-test baseline
 
 Day9B cleanup implementation commit：`09a2222 chore(day9b): close repository and CI hygiene`。
 
-Day13 最终实现提交为 `5c75a35 chore(day13): add docker release packaging`，远端验收为 GitHub Actions run `32107582238`，两个 job 均 passed。最终状态文档提交 `5d69b98 docs(day13): record final release acceptance` 对应 GitHub Actions run `32108537996`，两个 job 再次 passed。`chat-api` v2-plus 功能与发布实现保持 closed；后续只进行 README 封板、合并 `master` 和 release tag。
+Day13 最终实现提交为 `5c75a35 chore(day13): add docker release packaging`，远端验收为 GitHub Actions run `32107582238`，两个 job 均 passed。最终状态文档提交 `5d69b98 docs(day13): record final release acceptance` 对应 GitHub Actions run `32108537996`，两个 job 再次 passed。`chat-api` v2-plus 功能与发布实现保持 closed；本次封板通过最终 README、`master` 合并和 release tag 完成，之后仅进行必要维护、演示和复习。

@@ -2,7 +2,7 @@
 
 一个面向生产工程实践的 **FastAPI LLM Chat Gateway**。项目聚焦单租户聊天网关的核心工程能力：统一 Provider、OpenAI-compatible API、Conversation 持久化、RAG、Provider resilience、Usage/Cost、API Key、限流与 token quota、可复现并发压测，以及 Docker/CI 发布闭环。
 
-> 当前状态：`v2-langchain-rag-plus` 已完成代码、测试、性能基线和 Docker 发布验收；功能范围已冻结。合并 `master` 与 release tag 仅属于仓库发布操作，不再新增业务能力。
+> 发布状态：v2-plus 实现基线已完成代码、测试、性能基线和 Docker 发布验收，功能范围已冻结。正式发布以 `master` 和 release tag 为准；后续仅做必要维护、演示和复习，不再新增业务能力。
 
 ## 1. Core capabilities
 
@@ -72,8 +72,6 @@ flowchart LR
 ```bash
 git clone https://github.com/ConnorLuis/chat-api.git
 cd chat-api
-
-git switch v2-langchain-rag-plus
 
 docker compose up --build --detach
 docker compose ps
@@ -813,9 +811,9 @@ single-node deployment
 - [`benchmarks/README.md`](benchmarks/README.md) — 压测方法、指标口径和复现规则
 - [`HANDOFF.md`](HANDOFF.md) — 历史开发状态、关键提交与收口记录
 
-## 17. Release status
+## 17. Release baseline
 
-`v2-langchain-rag-plus` 当前已经完成：
+v2-plus 发布基线已经完成：
 
 - 功能实现
 - full test suite
@@ -825,4 +823,4 @@ single-node deployment
 - Docker build / health / persistence / smoke
 - README / system design / demo / interview documentation
 
-功能范围已冻结。剩余操作只包括将该分支合并到 `master` 并创建 release tag；这些仓库发布步骤不会重新打开功能开发范围。
+功能范围已冻结。正式版本从 `master` 创建 release tag；发布后仅进行必要维护，不重新打开功能开发范围。
