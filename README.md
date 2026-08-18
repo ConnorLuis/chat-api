@@ -1,7 +1,7 @@
 # chat-api
 
 <!-- LLM_GATEWAY_PLUS_START -->
-## v2-plus 当前状态（Chat-Day13 local passed / remote CI pending）
+## v2-plus 当前状态（Chat-Day13 completed / v2-plus closed）
 
 - 目标分支：`v2-langchain-rag-plus`
 - Day9B 收口提交：`09a2222 chore(day9b): close repository and CI hygiene`
@@ -16,7 +16,7 @@
 - Chat-Day10：用户/IP 请求限流、可信代理开关、caller-aware 每日 token quota，以及原生和 OpenAI-compatible 同步/流式 usage 结算
 - Chat-Day11：统一 Provider 错误分类、显式 timeout、指数退避 retry、可选 fallback、流式首 token 边界，以及原生/OpenAI-compatible 可观测字段
 - Chat-Day12：可复现并发压测器、固定场景矩阵、逐请求原始样本和自动报告；已完成三次 clean-commit mock baseline，并记录吞吐量、P50/P95/P99、错误率和流式 TTFT
-- Chat-Day13（本地验收已通过）：非 root Python 3.10 镜像、Compose 命名卷、数据库 readiness 健康检查、宿主机 Ollama 网络、一键启动、六链路 smoke test 和独立 Docker CI job
+- Chat-Day13：非 root Python 3.10 镜像、Compose 命名卷、数据库 readiness 健康检查、宿主机 Ollama 网络、一键启动、六链路 smoke test 和独立 Docker CI job；本地与远端发布验收均已通过
 
 ### Chat-Day9B 收口
 
@@ -30,7 +30,7 @@
 - 取消 Git 对 Chroma、KB 文档和 SQLite 运行产物的跟踪
 - 提供完整 `.env.example`，并整理 `.gitignore`
 
-### 当前严格验收（Day13 本地）
+### 当前严格验收（Day13 最终）
 
 ```text
 Python 3.10.19
@@ -46,19 +46,25 @@ Docker health -> healthy, failing streak 0
 named-volume persistence across down/up -> 3/3 passed
 native/OpenAI sync/stream smoke -> 6/6 passed
 container -> host Ollama /api/tags -> HTTP 200, qwen2.5:7b
+Day13 implementation -> 5c75a35 chore(day13): add docker release packaging
+GitHub Actions run 32107582238 -> passed
+remote Python job 95620047535 -> 322 passed in 17.65s
+remote Docker job 95620047554 -> healthy, protocol smoke 6/6 passed
 ```
 
 Chat-Day9B 与 Chat-Day11 已通过本地和目标分支远端验收。Day12 实现提交 `a23c92e feat(day12): add reproducible load testing` 已通过本地严格验收和 GitHub Actions run `32032592555`；三次报告均来自该 clean commit、Python 3.10.19、单 worker、隔离 SQLite 和 MockProvider。
+
+Day13 实现提交 [`5c75a35 chore(day13): add docker release packaging`](https://github.com/ConnorLuis/chat-api/commit/5c75a3516d1b1fc6a0f5b50fc74925be58d609d6) 已通过目标 WSL 本地发布验收和 [GitHub Actions run `32107582238`](https://github.com/ConnorLuis/chat-api/actions/runs/32107582238)。远端 Python 3.10 全量测试与 Docker release smoke 两个独立 job 均通过，Chat-Day13 与 v2-plus 发布收口完成。
 
 三次共执行 3,960 个测量请求，整体错误率为 49/3,960（1.237%）。除 `native-sync-c50` 外，其余七个场景三次均为 0 错误；C50 三次错误率为 0%、5.0%、4.8%，合计 49/1,500（3.267%）。49 个失败全部为持久化阶段 SQLAlchemy 连接池耗尽导致的 HTTP 500，明确暴露了单 worker + 当前 SQLite/QueuePool 配置的高并发边界，而非模型推理失败。
 
 ### 项目边界
 
-`agent-api` 负责 Agentic RAG、GraphRAG、Multi-Agent 和 MCP。`chat-api` 不继续增加 Agent 编排能力；Day13 本地验收已完成，当前只做提交与远端 CI 收口，不再增加新功能。
+`agent-api` 负责 Agentic RAG、GraphRAG、Multi-Agent 和 MCP。`chat-api` 的 v2-plus 功能开发与发布收口已经完成，不继续增加 Agent 编排或其他新业务能力；后续只做面试复习、演示和必要维护。
 
 ### 下一步
 
-提交 Day13 发布收口实现并推送 `v2-langchain-rag-plus`；以 GitHub Actions 的 Python `test` 与 `docker-smoke` 两个 job 完成远端验收，然后回填实际 commit/run 并将 Chat-Day13 标记 completed。
+Chat-Day13 已完成，`chat-api` v2-plus 正式收口。下一阶段以复习系统设计、演练项目讲解和维护可复现 demo 为主，不再安排新的 Chat-Day 开发任务。
 <!-- LLM_GATEWAY_PLUS_END -->
 
 
@@ -297,7 +303,7 @@ docker compose exec chat-api python -c \
 
 如果返回 connection refused，先在宿主机确认 Ollama 已运行。Ollama 默认只绑定 `127.0.0.1:11434`；原生 Linux bridge 或部分 WSL 网络下需要按 [Ollama FAQ](https://docs.ollama.com/faq) 将宿主机 `OLLAMA_HOST` 设置为可被容器访问的监听地址，例如 `0.0.0.0:11434`，重启 Ollama，并通过防火墙限制为可信本机网络。也可以在本地 `.env` 中把 `OLLAMA_DOCKER_BASE_URL` 改为实际可达的 Windows/WSL 网关地址。
 
-### Day13 本地发布验收
+### Day13 最终发布验收
 
 2026-08-18 在 WSL2 + Docker Desktop 目标环境完成实测：
 
@@ -310,8 +316,11 @@ docker compose exec chat-api python -c \
 | 持久化 | `/app/data`、`/app/runs`、`/app/kb` 三个命名卷挂载正确，`down/up` 后 3/3 marker 保留 |
 | 协议 smoke | 首次启动和容器重建后均为 6/6 passed |
 | 宿主机 Ollama | `host.docker.internal -> 192.168.65.254`；`/api/tags` HTTP 200；发现 `qwen2.5:7b` |
+| 实现提交 | [`5c75a35 chore(day13): add docker release packaging`](https://github.com/ConnorLuis/chat-api/commit/5c75a3516d1b1fc6a0f5b50fc74925be58d609d6) |
+| 远端 CI | [run `32107582238`](https://github.com/ConnorLuis/chat-api/actions/runs/32107582238)：Python job `95620047535` 与 Docker job `95620047554` 均 passed |
+| 远端测试 | Python 3.10：`322 passed in 17.65s`；Docker 容器 `healthy`；六链路 smoke 6/6 passed |
 
-上述结果完成了本地发布验收；尚未生成 Day13 实现 commit 和远端 GitHub Actions run，因此在两个远端 job 通过前不把整个 Day13 标记为 completed。
+上述本地和远端结果共同完成了 Day13 发布验收。Chat-Day13 与 `chat-api` v2-plus 已正式收口；后续文档提交触发的 CI 只用于验证文档变更没有破坏发布基线，不需要把该次 run 反向写回文档。
 
 ### 镜像范围与面试口径
 

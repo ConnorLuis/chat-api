@@ -1,6 +1,6 @@
-# HANDOFF — chat-api v2-plus（Chat-Day13 local passed / remote CI pending）
+# HANDOFF — chat-api v2-plus（Chat-Day13 completed / v2-plus closed）
 
-> 新对话开场可直接粘贴：`chat-api 当前以 v2-langchain-rag-plus 为目标分支，定位为 production-oriented、单租户的 LLM Chat Gateway。Chat-Day1～Day12 已完成多 Provider、OpenAI-compatible 同步/流式、会话持久化、usage/cost、鉴权限流、Provider resilience 与可复现压测。Chat-Day13 已完成固定 Python 3.10 的非 root 镜像、单 worker Uvicorn、启动时建库、SQLite/runs/KB 命名卷、/ready healthcheck、宿主机 Ollama 网络、一键启动、native/OpenAI 同步流式六链路 smoke test 和独立 Docker CI job；目标 WSL 的 Python 3.10 全量回归、容器 health、跨重建三卷持久化、六链路 smoke 和容器到 Windows Ollama 的真实连接均已通过。下一步只提交并确认 GitHub Actions 的 Python/Docker 两个 job，再把 Day13 标记 completed。不要增加 Agentic RAG、GraphRAG、Multi-Agent 或 MCP。`
+> 新对话开场可直接粘贴：`chat-api 的 v2-langchain-rag-plus 已正式收口，定位为 production-oriented、单租户的 LLM Chat Gateway。Chat-Day1～Day13 已完成多 Provider、OpenAI-compatible 同步/流式、会话持久化、usage/cost、鉴权限流、Provider resilience、可复现压测，以及固定 Python 3.10 的非 root Docker 发布单元。Day13 实现提交 5c75a35 已通过目标 WSL 本地验收和 GitHub Actions run 32107582238；远端 Python 全量测试为 322 passed，Docker 容器 healthy，六链路 smoke 全部通过。chat-api 后续只做复习、演示和必要维护，不增加 Agentic RAG、GraphRAG、Multi-Agent 或 MCP。`
 
 ## 1. 当前事实
 
@@ -27,12 +27,14 @@
 | Day12 最终 CI | GitHub Actions run `32034762231`：passed |
 | Day12 实测 | clean commit 上连续 3 次、8 场景、共 3,960 个测量请求 |
 | Day12 当前状态 | completed；mock baseline 已复核并记录 |
-| Day13 实现基线 | `ff47733` 上的 release candidate，尚未提交 |
+| Day13 实现提交 | `5c75a35 chore(day13): add docker release packaging` |
 | Day13 辅助开发验收 | Python 3.12：`322 passed`；真实 Uvicorn 六链路 smoke passed |
 | Day13 目标环境验收 | Python 3.10.19：`322 passed in 18.24s`；Docker build/health/volumes/smoke/Ollama passed |
-| Day13 当前状态 | 本地验收 completed；实现 commit 与远端双 job CI pending |
+| Day13 远端验收 | GitHub Actions run `32107582238`：Python job `95620047535` 与 Docker job `95620047554` 均 passed |
+| Day13 远端测试 | Python 3.10：`322 passed in 17.65s`；Docker healthy；协议 smoke 6/6 passed |
+| Day13 当前状态 | completed；`chat-api` v2-plus closed |
 
-Day9B、Day11 与 Day12 均已通过各自本地严格验收和目标分支 GitHub Actions。Day13 本机容器验收已通过；只有 GitHub Actions `test` / `docker-smoke` 两个 job 都通过后才能最终标记 completed。
+Day9B、Day11、Day12 与 Day13 均已通过各自本地严格验收和目标分支 GitHub Actions。Day13 的实现提交与两个远端 job 已全部通过，`chat-api` v2-plus 发布收口完成。
 
 ## 2. 项目定位与边界
 
@@ -47,7 +49,7 @@ Day9B、Day11 与 Day12 均已通过各自本地严格验收和目标分支 GitH
 
 `agent-api` 负责 Agentic RAG、GraphRAG、Multi-Agent、LangGraph 编排和 MCP。不要在 `chat-api` 重复实现这些能力。
 
-当前不再扩展 Prompt cache、多租户 RBAC、复杂 Agent Graph 等新范围。Day13 本地已通过，只允许修复远端 CI 发现的可复现问题，不再增加业务能力。
+当前不再扩展 Prompt cache、多租户 RBAC、复杂 Agent Graph 等新范围。`chat-api` 功能开发已经收口，后续只允许必要维护、面试复习和可复现演示，不再增加业务能力。
 
 ## 3. 已完成能力
 
@@ -124,7 +126,7 @@ Day9B、Day11 与 Day12 均已通过各自本地严格验收和目标分支 GitH
 - 49 个失败全部是持久化阶段 SQLAlchemy QueuePool 耗尽导致的 HTTP 500，未混入 Provider/协议类错误；
 - 三次聚合表和性能边界解释已写入 README 的 `Mock baseline` 小节。
 
-### Chat-Day13：Docker 与发布收口（local passed / remote pending）
+### Chat-Day13：Docker 与发布收口（completed）
 
 - `Dockerfile`：固定 `python:3.10.19-slim-bookworm`，安装 core/LangChain/OpenAI runtime，不安装 dev 或 HF embedding 依赖；
 - 使用 uid/gid 10001 的非 root `app` 用户，镜像内预建并授权运行目录；
@@ -139,7 +141,7 @@ Day9B、Day11 与 Day12 均已通过各自本地严格验收和目标分支 GitH
 - 开启 API 鉴权时，smoke 仅从当前 shell 的 `CHAT_API_KEY` 读取明文 key，不落盘也不打印；
 - 新增 Docker artifact/smoke 单元测试；辅助开发环境全量结果为 `322 passed`；
 - CI 新增独立 `docker-smoke` job：真实 build、等待 healthy、执行六链路 smoke、检查 Docker health、最终清理临时卷；
-- 目标 WSL 已完成 Docker build、health、三卷持久化、重建后 smoke 和宿主 Ollama 真实连接；当前只待实现提交与远端双 job CI。
+- 目标 WSL 已完成 Docker build、health、三卷持久化、重建后 smoke 和宿主 Ollama 真实连接；实现提交 `5c75a35` 与 GitHub Actions run `32107582238` 的远端双 job 均已通过。
 
 ### v2 RAG 能力
 
@@ -421,7 +423,7 @@ host.docker.internal -> 192.168.65.254
 container -> Windows Ollama /api/tags -> HTTP 200, qwen2.5:7b
 ```
 
-远端验收前的提交命令：
+发布提交前检查：
 
 ```bash
 git diff --check
@@ -430,7 +432,7 @@ git diff --cached --check
 git status --short
 ```
 
-本地结果已完整返回并记录。实现 commit hash 和 GitHub Actions run 尚未产生，不预填远端验收结果。
+本地结果已完整返回并记录。实现提交 `5c75a35` 已通过 GitHub Actions run `32107582238`：Python job `95620047535` 为 `322 passed in 17.65s`，Docker job `95620047554` 为容器 `healthy` 且六链路 smoke 6/6 passed。
 
 ## 8. Git 提交边界
 
@@ -464,11 +466,7 @@ git status --short
 
 ## 9. 已知未完成项
 
-Provider resilience 与 Day12 压测已完成，当前剩余项：
-
-1. 提交 Day13 实现并推送 `v2-langchain-rag-plus`；
-2. 确认 GitHub Actions `test` 与 `docker-smoke` 两个 job；
-3. 将实际提交 hash 和 CI run 写入 README/HANDOFF，标记 Day13 completed。
+Provider resilience、Day12 压测和 Day13 Docker 发布收口均已完成。当前简历项目范围内没有必须继续实现的遗留项。
 
 Alembic/PostgreSQL、多实例分布式 limiter/quota 和完整 metrics/tracing backend 属于未来演进边界，不作为本轮 chat-api 简历项目收口的必做项。大路由拆分也不是 Day11 遗留缺陷；只有后续改动确实受阻时，才允许做保持行为不变的独立重构。
 
@@ -480,11 +478,11 @@ Alembic/PostgreSQL、多实例分布式 limiter/quota 和完整 metrics/tracing 
 - README/HANDOFF 已记录实际请求数、并发度、RPS、P50/P95、错误率、TTFT 和连接池瓶颈；
 - Ollama 真实模型基准是可选加分项，只有注明 CPU/GPU、显存、模型 tag 和量化精度后才可引用，不阻塞收口。
 
-### Chat-Day13：Docker 与发布收口（local passed / remote pending）
+### Chat-Day13：Docker 与发布收口（completed）
 
-- 实现和目标 WSL 本地验收已完成，禁止继续扩展业务范围；
-- 下一动作是提交 `chore(day13): add docker release packaging` 并推送目标分支；
-- 远端双 job 通过后再做一次很小的最终状态文档提交。
+- 实现提交 `5c75a35`、目标 WSL 本地验收和 GitHub Actions 远端双 job 均已完成；
+- 本次只提交 README/HANDOFF 最终状态，随后验证该文档提交触发的 CI；
+- CI 通过后 `chat-api` 不再安排新的 Chat-Day，转入面试复习、演示和必要维护。
 
 ## 11. 关键提交
 
@@ -504,8 +502,9 @@ e8e0ab3 feat(day10): account OpenAI-compatible streaming usage
 39ad9d4 feat(day11): add provider resilience and observability
 a23c92e feat(day12): add reproducible load testing
 ff47733 docs(day12): record mock load-test baseline
+5c75a35 chore(day13): add docker release packaging
 ```
 
 Day9B cleanup implementation commit：`09a2222 chore(day9b): close repository and CI hygiene`。
 
-Day13 本地验收版当前基于 `ff47733`，最终实现 commit 和 GitHub Actions run 尚未产生，不要预填 hash 或伪造远端验收结果。
+Day13 最终实现提交为 `5c75a35 chore(day13): add docker release packaging`，远端验收为 GitHub Actions run `32107582238`，两个 job 均 passed。最终状态文档提交触发的 CI 通过后，`chat-api` v2-plus 即保持 closed 状态。
