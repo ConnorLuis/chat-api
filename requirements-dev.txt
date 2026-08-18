@@ -1,0 +1,7 @@
+-c constraints.txt
+-r requirements.txt
+
+# Test dependencies. httpx2 is used by Starlette's current TestClient;
+# the application still uses httpx for outbound provider calls.
+pytest
+httpx2

@@ -1,7 +1,8 @@
+-c constraints.txt
 fastapi
 uvicorn[standard]
 httpx
 pydantic
-pytest
 chromadb
 numpy
+SQLAlchemy

@@ -1,0 +1,61 @@
+{
+  "suite_name": "ollama-qwen2-5-7b-baseline",
+  "base_url": "http://127.0.0.1:8000",
+  "api_key_env": "CHAT_API_KEY",
+  "metadata": {
+    "purpose": "single-machine end-to-end model-serving baseline",
+    "provider": "ollama",
+    "server_workers": 1,
+    "application_log_level": "WARNING",
+    "server_log_level": "warning",
+    "uvicorn_access_log": false,
+    "database": "isolated SQLite",
+    "note": "replace hardware details and model tag before publishing"
+  },
+  "defaults": {
+    "provider": "ollama",
+    "model": "qwen2.5:7b",
+    "prompt": "用一句简短的话解释什么是 RAG。",
+    "max_tokens": 32,
+    "timeout_s": 180,
+    "warmup_requests": 1
+  },
+  "scenarios": [
+    {
+      "name": "ollama-native-sync-c1",
+      "mode": "native_sync",
+      "requests": 10,
+      "concurrency": 1
+    },
+    {
+      "name": "ollama-native-sync-c2",
+      "mode": "native_sync",
+      "requests": 20,
+      "concurrency": 2
+    },
+    {
+      "name": "ollama-native-sync-c4",
+      "mode": "native_sync",
+      "requests": 20,
+      "concurrency": 4
+    },
+    {
+      "name": "ollama-native-stream-c1",
+      "mode": "native_stream",
+      "requests": 5,
+      "concurrency": 1
+    },
+    {
+      "name": "ollama-native-stream-c2",
+      "mode": "native_stream",
+      "requests": 10,
+      "concurrency": 2
+    },
+    {
+      "name": "ollama-native-stream-c4",
+      "mode": "native_stream",
+      "requests": 10,
+      "concurrency": 4
+    }
+  ]
+}

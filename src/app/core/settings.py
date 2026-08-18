@@ -1,3 +1,4 @@
+import math
 import os
 
 # 健壮的环境变量读取
@@ -6,14 +7,116 @@ def getenv(key: str, default: str) -> str:
     v = os.getenv(key)
     return default if v is None or v == "" else v
 
+
+def getenv_bool(
+    key: str,
+    default: bool,
+) -> bool:
+    raw = getenv(
+        key,
+        "true" if default else "false",
+    ).strip().lower()
+
+    if raw in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return True
+
+    if raw in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }:
+        return False
+
+    raise ValueError(
+        f"{key} must be a boolean value"
+    )
+
+
+def getenv_int(
+    key: str,
+    default: int,
+    *,
+    minimum: int = 0,
+) -> int:
+    raw = getenv(
+        key,
+        str(default),
+    ).strip()
+
+    try:
+        value = int(raw)
+
+    except ValueError as exc:
+        raise ValueError(
+            f"{key} must be an integer"
+        ) from exc
+
+    if value < minimum:
+        raise ValueError(
+            f"{key} must be greater than "
+            f"or equal to {minimum}"
+        )
+
+    return value
+
+
+def getenv_float(
+    key: str,
+    default: float,
+    *,
+    minimum: float = 0.0,
+) -> float:
+    raw = getenv(key, str(default)).strip()
+
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise ValueError(
+            f"{key} must be a number"
+        ) from exc
+
+    if not math.isfinite(value) or value < minimum:
+        raise ValueError(
+            f"{key} must be a finite number greater than "
+            f"or equal to {minimum}"
+        )
+
+    return value
+
 """封装所有配置项
 
 """
 class Settings:
+    @property
+    def APP_LOG_LEVEL(self) -> str:
+        value = getenv(
+            "APP_LOG_LEVEL",
+            "INFO",
+        ).strip().upper()
+        allowed = {
+            "CRITICAL",
+            "ERROR",
+            "WARNING",
+            "INFO",
+            "DEBUG",
+        }
+        if value not in allowed:
+            raise ValueError(
+                "APP_LOG_LEVEL must be one of: "
+                + ", ".join(sorted(allowed))
+            )
+        return value
+
     # Ollama 服务的基础地址	http://127.0.0.1:11434	直接返回字符串
     @property
     def OLLAMA_BASE_URL(self) -> str:
-        return getenv("OLLAMA_BASE_URL", "http://127.0.0.1:9999")
+        return getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
 
     # 默认使用的 Ollama 模型名	qwen2.5:7b	直接返回字符串
     @property
@@ -23,7 +126,229 @@ class Settings:
     # Ollama API 调用的超时时间（秒）	60	先读取字符串，再转 float 类型
     @property
     def OLLAMA_TIMEOUT_S(self) -> float:
-        return float(getenv("OLLAMA_TIMEOUT_S", "60"))
+        return getenv_float(
+            "OLLAMA_TIMEOUT_S",
+            60.0,
+            minimum=0.001,
+        )
+
+    # OpenAI / OpenAI-compatible Provider 配置
+    @property
+    def OPENAI_API_KEY(self) -> str:
+        return getenv("OPENAI_API_KEY", "")
+
+    @property
+    def OPENAI_BASE_URL(self) -> str:
+        return getenv("OPENAI_BASE_URL", "")
+
+    @property
+    def OPENAI_MODEL(self) -> str:
+        return getenv("OPENAI_MODEL", "")
+
+    @property
+    def OPENAI_TIMEOUT_S(self) -> float:
+        return getenv_float(
+            "OPENAI_TIMEOUT_S",
+            60.0,
+            minimum=0.001,
+        )
+
+    @property
+    def OPENAI_COMPAT_DEFAULT_PROVIDER(self) -> str:
+        """OpenAI-compatible API 未指定 provider 时使用的后端。"""
+        return getenv(
+            "OPENAI_COMPAT_DEFAULT_PROVIDER",
+            "mock",
+        ).strip().lower()
+
+
+    # Provider resilience
+    @property
+    def PROVIDER_RETRY_MAX_ATTEMPTS(self) -> int:
+        """包含第一次调用在内的最大尝试次数。"""
+        return getenv_int(
+            "PROVIDER_RETRY_MAX_ATTEMPTS",
+            2,
+            minimum=1,
+        )
+
+    @property
+    def PROVIDER_RETRY_BASE_DELAY_MS(self) -> int:
+        return getenv_int(
+            "PROVIDER_RETRY_BASE_DELAY_MS",
+            100,
+            minimum=0,
+        )
+
+    @property
+    def PROVIDER_RETRY_MAX_DELAY_MS(self) -> int:
+        return getenv_int(
+            "PROVIDER_RETRY_MAX_DELAY_MS",
+            1000,
+            minimum=0,
+        )
+
+    @property
+    def PROVIDER_FALLBACK_ENABLED(self) -> bool:
+        return getenv_bool(
+            "PROVIDER_FALLBACK_ENABLED",
+            False,
+        )
+
+    @property
+    def PROVIDER_FALLBACK_PROVIDER(self) -> str:
+        return getenv(
+            "PROVIDER_FALLBACK_PROVIDER",
+            "",
+        ).strip().lower()
+
+    @property
+    def PROVIDER_FALLBACK_MODEL(self) -> str:
+        return getenv(
+            "PROVIDER_FALLBACK_MODEL",
+            "",
+        ).strip()
+
+    # Conversation / Message 关系数据库
+    @property
+    def DATABASE_URL(self) -> str:
+        return getenv(
+            "DATABASE_URL",
+            "sqlite:///./data/chat_api.db",
+        )
+
+    # API Key authentication
+    @property
+    def API_AUTH_ENABLED(self) -> bool:
+        """是否要求业务接口提供有效的服务 API Key。"""
+
+        return getenv_bool(
+            "API_AUTH_ENABLED",
+            False,
+        )
+
+    @property
+    def API_KEY_HASH_PEPPER(self) -> str:
+        """服务端 HMAC secret；禁止提交到仓库."""
+
+        return getenv(
+            "API_KEY_HASH_PEPPER",
+            "",
+        )
+
+    # Request rate limit / token quota
+    @property
+    def REQUEST_RATE_LIMIT_ENABLED(
+        self,
+    ) -> bool:
+        return getenv_bool(
+            "REQUEST_RATE_LIMIT_ENABLED",
+            False,
+        )
+
+    @property
+    def USER_RATE_LIMIT_REQUESTS(
+        self,
+    ) -> int:
+        return getenv_int(
+            "USER_RATE_LIMIT_REQUESTS",
+            60,
+            minimum=1,
+        )
+
+    @property
+    def USER_RATE_LIMIT_WINDOW_SECONDS(
+        self,
+    ) -> int:
+        return getenv_int(
+            "USER_RATE_LIMIT_WINDOW_SECONDS",
+            60,
+            minimum=1,
+        )
+
+    @property
+    def IP_RATE_LIMIT_REQUESTS(
+        self,
+    ) -> int:
+        return getenv_int(
+            "IP_RATE_LIMIT_REQUESTS",
+            120,
+            minimum=1,
+        )
+
+    @property
+    def IP_RATE_LIMIT_WINDOW_SECONDS(
+        self,
+    ) -> int:
+        return getenv_int(
+            "IP_RATE_LIMIT_WINDOW_SECONDS",
+            60,
+            minimum=1,
+        )
+
+    @property
+    def RATE_LIMIT_TRUST_PROXY_HEADERS(
+        self,
+    ) -> bool:
+        return getenv_bool(
+            "RATE_LIMIT_TRUST_PROXY_HEADERS",
+            False,
+        )
+
+    @property
+    def TOKEN_QUOTA_ENABLED(
+        self,
+    ) -> bool:
+        return getenv_bool(
+            "TOKEN_QUOTA_ENABLED",
+            False,
+        )
+
+    @property
+    def DAILY_TOKEN_QUOTA_TOKENS(
+        self,
+    ) -> int:
+        return getenv_int(
+            "DAILY_TOKEN_QUOTA_TOKENS",
+            100_000,
+            minimum=1,
+        )
+
+    # Conversation 历史上下文
+    @property
+    def CONVERSATION_HISTORY_MAX_TURNS(self) -> int:
+        return int(
+            getenv(
+                "CONVERSATION_HISTORY_MAX_TURNS",
+                "10",
+            )
+        )
+
+    @property
+    def CONVERSATION_CONTEXT_TOKEN_BUDGET(self) -> int:
+        return int(
+            getenv(
+                "CONVERSATION_CONTEXT_TOKEN_BUDGET",
+                "4096",
+            )
+        )
+
+    @property
+    def CONVERSATION_HISTORY_FETCH_LIMIT(self) -> int:
+        return int(
+            getenv(
+                "CONVERSATION_HISTORY_FETCH_LIMIT",
+                "500",
+            )
+        )
+
+    # 版本化 token pricing catalog
+    @property
+    def PRICING_CATALOG_PATH(self) -> str:
+        return getenv(
+            "PRICING_CATALOG_PATH",
+            "config/pricing_catalog.json",
+        )
 
     # 提示词模板的地址
     @property
@@ -81,7 +406,7 @@ class Settings:
     # hf 模型路径/名字
     @property
     def EMBEDDING_MODEL(self) -> str:
-        return getenv("EMBEDDING_MODEL", "/mnt/f/LLM/maidalun/bce-embedding-base_v1")
+        return getenv("EMBEDDING_MODEL", "maidalun1020/bce-embedding-base_v1")
 
     # 文档地址
     @property
@@ -97,6 +422,11 @@ class Settings:
     @property
     def EMBEDDING_DIM(self) -> str:
         return getenv("EMBEDDING_DIM", "512")
+
+    # RAG 后端类型（native/其他）
+    @property
+    def RAG_BACKEND(self) -> str:
+        return getenv("RAG_BACKEND", "native").lower()
 
 
 settings = Settings()

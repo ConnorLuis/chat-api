@@ -1,7 +1,8 @@
+from abc import ABC, abstractmethod
 import hashlib
 import math
+
 from src.app.core.settings import Settings
-from abc import ABC, abstractmethod
 
 """
 统一接口：EmbeddingEngine
@@ -23,6 +24,7 @@ class EmbeddingEngine(ABC):
     @abstractmethod
     def embed_query(self, query: str) -> list[float]:
         pass
+
 
 # 把文本 hash 成一个固定向量（可复现）
 class MockEmbeddingEngine(EmbeddingEngine):
@@ -56,37 +58,51 @@ class MockEmbeddingEngine(EmbeddingEngine):
     def embed_query(self, query: str) -> list[float]:
         return self.embed_documents([query])[0]
 
+
 # 真实语义模型
 class HFEmbeddingEngine(EmbeddingEngine):
     # init 时加载模型并读维度：get_sentence_embedding_dimension()
     # embed_documents：批量 encode（normalize_embeddings=True）
     # embed_query：单条 encode（normalize_embeddings=True）
-    class HFEmbeddingEngine:
-        def __init__(self, model_name: str):
-            try:
-                from sentence_transformers import SentenceTransformer
-            except ImportError as e:
-                raise RuntimeError(
-                    "EMBEDDING_PROVIDER=hf requires sentence-transformers. "
-                    "Install it with `pip install sentence-transformers`, "
-                    "or use EMBEDDING_PROVIDER=mock for tests/CI."
-                ) from e
+    def __init__(self, model_name_or_path: str):
+        try:
+            from sentence_transformers import SentenceTransformer
+        except ImportError as e:
+            raise RuntimeError(
+                "EMBEDDING_PROVIDER=hf requires sentence-transformers. "
+                "Install it with `python -m pip install "
+                "-r requirements-embeddings.txt`, or use "
+                "EMBEDDING_PROVIDER=mock for tests/CI."
+            ) from e
 
-            self.model = SentenceTransformer(model_name)
+        self.model = SentenceTransformer(model_name_or_path)
+        dimension = self.model.get_sentence_embedding_dimension()
+
+        if dimension is None:
+            raise RuntimeError(
+                "The configured embedding model did not expose its "
+                "sentence embedding dimension."
+            )
+
+        self._dim = int(dimension)
 
     @property
     def dim(self) -> int:
         return self._dim
 
-    def embed_documents(self, texts: list[str], batch_size: int=32) -> list[list[float]]:
+    def embed_documents(
+        self,
+        texts: list[str],
+        batch_size: int = 32,
+    ) -> list[list[float]]:
         if not texts:
             return []
 
         embeddings = self.model.encode(
             texts,
-            batch_size = batch_size,
+            batch_size=batch_size,
             normalize_embeddings=True,
-            show_progress_bar=False
+            show_progress_bar=False,
         )
 
         return embeddings.tolist()
@@ -98,10 +114,11 @@ class HFEmbeddingEngine(EmbeddingEngine):
         embedding = self.model.encode(
             text,
             normalize_embeddings=True,
-            show_progress_bar=False
+            show_progress_bar=False,
         )
 
         return embedding.tolist()
+
 
 def get_embedding_engine(settings: Settings) -> EmbeddingEngine:
     provider = settings.EMBEDDING_PROVIDER
@@ -109,6 +126,8 @@ def get_embedding_engine(settings: Settings) -> EmbeddingEngine:
     if provider == "mock":
         return MockEmbeddingEngine(dim=int(settings.EMBEDDING_DIM))
     elif provider == "hf":
-        return HFEmbeddingEngine(model_name_or_path=settings.EMBEDDING_MODEL)
+        return HFEmbeddingEngine(
+            model_name_or_path=settings.EMBEDDING_MODEL
+        )
     else:
         raise ValueError("只支持 mock / hf 两种嵌入引擎")

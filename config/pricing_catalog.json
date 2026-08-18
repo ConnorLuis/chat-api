@@ -1,0 +1,19 @@
+{
+  "version": "2026-07-11-v1",
+  "currency": "USD",
+  "unit_tokens": 1000000,
+  "prices": [
+    {
+      "provider": "mock",
+      "model": "*",
+      "prompt_price_per_unit": "0",
+      "completion_price_per_unit": "0"
+    },
+    {
+      "provider": "ollama",
+      "model": "*",
+      "prompt_price_per_unit": "0",
+      "completion_price_per_unit": "0"
+    }
+  ]
+}

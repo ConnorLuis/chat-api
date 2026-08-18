@@ -104,17 +104,57 @@ def score_answer(answer: str, expected_keywords: list[str], min_hits: int) -> di
         "answer_hit": (not uncertain) and len(hits) >= min_hits
     }
 
+def _norm_match(actual: str | None, expected: str | None) -> bool:
+    actual_norm = normalize_text(actual or "")
+    expected_norm = normalize_text(expected or "")
+
+    if not actual_norm or not expected_norm:
+        return False
+
+    return expected_norm in actual_norm or actual_norm in expected_norm
+
+
+def _citation_source_matches(citation: Dict, expected_sources: List[str]) -> bool:
+    source = citation.get("source")
+    return any(_norm_match(source, expected) for expected in expected_sources)
+
+
+def _citation_title_matches(citation: Dict, expected_titles: List[str]) -> bool:
+    title = citation.get("title")
+    source = citation.get("source")
+
+    # title 是主匹配字段；source 作为 fallback，是为了兼容 title 被错误写成 Header 的历史数据。
+    return any(
+        _norm_match(title, expected) or _norm_match(source, expected)
+        for expected in expected_titles
+    )
+
+
 def score_citations(citations: List[Dict], expected_sources: List[str], expected_titles: List[str]) -> Dict:
     has_cit = len(citations) > 0
-    src_hit = any(c.get("source") in expected_sources for c in citations)
-    tit_hit = any(c.get("title") in expected_titles for c in citations)
+
+    matched_sources = [
+        c.get("source")
+        for c in citations
+        if _citation_source_matches(c, expected_sources)
+    ]
+
+    matched_titles = [
+        c.get("title") or c.get("source")
+        for c in citations
+        if _citation_title_matches(c, expected_titles)
+    ]
+
+    src_hit = len(matched_sources) > 0
+    tit_hit = len(matched_titles) > 0
+
     return {
         "has_citations": has_cit,
         "source_hit": src_hit,
         "title_hit": tit_hit,
         "citation_hit": has_cit and src_hit,
-        "matched_sources": [c.get("source") for c in citations if c.get("source") in expected_sources],
-        "matched_titles":  [c.get("title")  for c in citations if c.get("title")  in expected_titles],
+        "matched_sources": matched_sources,
+        "matched_titles": matched_titles,
     }
 
 def score_effective_rag(meta: Dict) -> Dict:

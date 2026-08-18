@@ -2,7 +2,7 @@ from pydantic import BaseModel, Field, ConfigDict
 from typing import List, Literal, Optional,Any
 
 """基于 Pydantic v2 定义 AI 聊天接口的全量数据模型
-    覆盖「请求体（ChatRequest）」「消息结构（ChatMessage）」「响应体（ChatResponse）」「错误响应（ErrorResponse）」四类核心数据结构   
+    覆盖「请求体（ChatRequest）」「消息结构（ChatMessage）」「响应体（ChatResponse）」「错误响应（ErrorResponse）」四类核心数据结构
 """
 # 聊天消息的最小单元，适配大语言模型的标准消息格式
 class ChatMessage(BaseModel):
@@ -16,6 +16,16 @@ class ChatMessage(BaseModel):
 class ChatRequest(BaseModel):
     # 会话 ID -> 表示这个字段可以是str类型，也可以是None
     session_id: Optional[str] = Field(default=None, description="client session id for simple memory")
+    # Day6 持久化会话 ID。为空时继续使用原有无状态模式。
+    conversation_id: Optional[str] = Field(
+        default=None,
+        min_length=1,
+        max_length=36,
+        description=(
+            "Server-side persistent conversation id. "
+            "When omitted, chat remains stateless."
+        ),
+    )
     # 消息列表 -> 表示这个字段是一个列表，且列表中的每个元素都必须是ChatMessage类型
     messages: List[ChatMessage]
     # 温度系数，控制AI回复的随机性，默认0.7是常用平衡值
@@ -26,7 +36,13 @@ class ChatRequest(BaseModel):
     max_tokens: int = 256
     # 选择器，诉后端代码：“本次聊天请求，需要使用哪一个 AI 服务 / 模型引擎来处理并生成回复”。
     # 限制只能mock或ollama回复，避免传入无效值
-    provider: Literal["mock", "ollama"] = "mock"
+    provider: Literal["mock", "ollama", "openai"] = "mock"
+
+    # 请求级模型覆盖。为空时使用对应 Provider 的默认模型。
+    model: str | None = Field(
+        default=None,
+        description="Request-level model override.",
+    )
 
     prompt_id: str | None = None
     prompt_version: str | None = None
@@ -76,6 +92,87 @@ class RagMetadata(BaseModel):
     candidate_k: int = 0
     error: str | None = None
 
+    # RAG observability
+    backend: str | None = None
+    vectorstore: str | None = None
+    embedding_ms: int = 0
+    retrieval_ms: int = 0
+    rerank_ms: int = 0
+    context_build_ms: int = 0
+    total_ms: int = 0
+
+    # Day28: Hybrid RAG observability
+    retrieval_mode: str | None = None
+    fusion: str | None = None
+    vector_weight: float = 0.0
+    lexical_weight: float = 0.0
+
+class CostMetadata(BaseModel):
+    pricing_key: str
+    matched_pricing_key: str | None = None
+    pricing_version: str
+    currency: str
+    unit_tokens: int
+
+    cost_status: Literal[
+        "estimated",
+        "unknown_price",
+        "usage_unavailable",
+    ]
+
+    prompt_price_per_unit: str | None = None
+    completion_price_per_unit: str | None = None
+
+    prompt_cost: str | None = None
+    completion_cost: str | None = None
+    estimated_cost: str | None = None
+
+
+class UsageMetadata(BaseModel):
+    request_id: str
+    status: Literal[
+        "succeeded",
+        "provider_failed",
+        "client_disconnected",
+        "persistence_failed",
+    ]
+    usage_source: Literal[
+        "provider_native",
+        "local_estimate",
+        "unavailable",
+    ]
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    total_tokens: int | None = None
+    cost: CostMetadata | None = None
+
+
+class ProviderAttemptTrace(BaseModel):
+    ordinal: int
+    provider: str
+    model: str
+    outcome: Literal[
+        "succeeded",
+        "failed",
+        "stream_started",
+        "stream_interrupted",
+    ]
+    latency_ms: int
+    error_code: str | None = None
+    retryable: bool | None = None
+
+
+class ProviderExecutionTrace(BaseModel):
+    primary_provider: str
+    final_provider: str
+    total_attempts: int
+    retries: int
+    fallback_used: bool
+    attempts: List[
+        ProviderAttemptTrace
+    ] = Field(default_factory=list)
+
+
 # 封装响应的元信息（引擎类型、模型名、响应耗时），作为 ChatResponse 的可选字段
 class ChatMetadata(BaseModel):
     provider: str
@@ -87,6 +184,10 @@ class ChatMetadata(BaseModel):
     rag: RagMetadata = Field(default_factory=RagMetadata)
     context_chars: int | None = None
     rag_error: str | None = None
+    usage: UsageMetadata | None = None
+    provider_execution: (
+        ProviderExecutionTrace | None
+    ) = None
 
 # ChatResponse响应模型
 class ChatResponse(BaseModel):
@@ -95,6 +196,8 @@ class ChatResponse(BaseModel):
     trace_id: str
     # 会话 ID -> 和 ChatRequest 中的 session_id 对应，返回客户端传入的会话 ID（如果有），用于维持用户的聊天上下文（比如多轮对话记忆）。
     session_id: Optional[str] = None
+    # Day6 服务端持久化会话 ID；无状态请求返回 None。
+    conversation_id: Optional[str] = None
     # AI 针对用户请求生成的最终回复内容，也是响应中最核心的字段。
     answer: str
     # 定义元数据
@@ -135,6 +238,9 @@ class ErrorDetail(BaseModel):
     model: str
     latency_ms: int
     error: str
+    provider_execution: (
+        ProviderExecutionTrace | None
+    ) = None
 
 # 外层包装，符合 FastAPI 错误响应的默认格式（detail 字段）
 class ErrorResponse(BaseModel):
@@ -166,7 +272,11 @@ class PromptRef(BaseModel):
 
 # 提示词对比请求
 class PromptCompareRequest(BaseModel):
-    provider: Literal["mock", "ollama"] = "mock"
+    provider: Literal["mock", "ollama", "openai"] = "mock"
+    model: str | None = Field(
+        default=None,
+        description="Request-level model override.",
+    )
     messages: List[ChatMessage]
     prompt_a: PromptRef
     prompt_b: PromptRef
@@ -218,6 +328,9 @@ class RunRecord(BaseModel):
     temperature: Optional[float] = None
     top_p: Optional[float] = None
     max_tokens: Optional[int] = None
+    provider_execution: (
+        ProviderExecutionTrace | None
+    ) = None
 
 # 运行踪迹响应体
 class RunsTraceResponse(BaseModel):

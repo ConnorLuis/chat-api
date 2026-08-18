@@ -2,7 +2,7 @@ import json
 import os
 import threading
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -10,6 +10,11 @@ from src.app.core.settings import settings
 from src.app.kb.schemas import DocumentMeta
 
 _io_lock = threading.Lock()
+
+
+def _utc_now_iso() -> str:
+    """Return an unambiguous, timezone-aware UTC timestamp."""
+    return datetime.now(timezone.utc).isoformat()
 
 # 确保KB_DIR/docs存在
 def init_storage() -> None:
@@ -29,14 +34,14 @@ def save_document(title: str, text: str, source: str) -> str:
     with open(md_file_path, "w", encoding="utf-8") as f:
         f.write(text)
 
-    now = datetime.utcnow().isoformat()
+    now = _utc_now_iso()
 
     # 构建元信息
     metadata = {
         "doc_id": doc_id,
         "title": title,
         "source": source,
-        "created_at": datetime.utcnow().isoformat(),
+        "created_at": now,
         "updated_at": now,
         "deleted": False,
     }
@@ -162,12 +167,13 @@ def list_documents(limit: int, offset: int, include_deleted: bool=False, jsonl_p
 def mark_deleted(doc_id: str, reason: str | None = None):
 
     init_storage()
+    now = _utc_now_iso()
 
     tombstone_record = {
         "doc_id": doc_id,
         "deleted": True,
-        "deleted_at": datetime.utcnow().isoformat(),
-        "updated_at": datetime.utcnow().isoformat(),
+        "deleted_at": now,
+        "updated_at": now,
         "reason": reason
     }
     with _io_lock:

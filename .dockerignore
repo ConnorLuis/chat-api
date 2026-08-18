@@ -1,0 +1,48 @@
+# Version control and editor state
+.git/
+.github/
+.idea/
+.vscode/
+.qoder/
+
+# Python environments, bytecode, and test/tool caches
+.venv/
+.venv-*/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local secrets. Keep the committed template available to Compose.
+.env
+.env.*
+!.env.example
+
+# Tests and local-only development artifacts
+tests/
+*.egg-info/
+
+# Runtime state must come from Docker volumes, never from the build context.
+data/
+runs/
+*.db
+*.sqlite3
+*.log
+kb/chroma/
+kb/docs/
+kb/docs.jsonl
+
+# Generated benchmark/evaluation output and local backups
+benchmarks/results/
+eval/results/
+eval/reports/
+eval/results.jsonl
+eval/summary.json
+eval/kb_seed_manifest*.jsonl
+eval/qa_q019.jsonl
+eval/qa_probe_5.jsonl
+backup_kb_reset/

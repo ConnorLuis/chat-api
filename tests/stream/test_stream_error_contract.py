@@ -13,8 +13,20 @@ client = TestClient(app)
 """
 def test_stream_error_contract(monkeypatch):
     # 临时覆盖环境变量 OLLAMA_BASE_URL，指向本地 1 号端口（该端口几乎不会有服务监听）；
-    # OllamaEngine 初始化时会读取这个错误的地址，调用 /api/generate 时会触发连接拒绝 / 超时错误；
+    # OllamaProvider 初始化时会读取这个错误的地址，调用 /api/generate 时会触发连接拒绝 / 超时错误；
+    for key in (
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
     monkeypatch.setenv("OLLAMA_BASE_URL", "http://127.0.0.1:1")
+    monkeypatch.setenv("PROVIDER_RETRY_MAX_ATTEMPTS", "1")
+    monkeypatch.setenv("PROVIDER_FALLBACK_ENABLED", "false")
 
     payload = {
         "provider": "ollama",
@@ -56,3 +68,14 @@ def test_stream_error_contract(monkeypatch):
             assert field in error_data
             # 额外断言字段非空（增强契约校验）
             assert error_data[field] is not None and str(error_data[field]).strip() != ""
+
+        execution = error_data[
+            "provider_execution"
+        ]
+        assert execution["primary_provider"] == "ollama"
+        assert execution["final_provider"] == "ollama"
+        assert execution["total_attempts"] == 1
+        assert execution["fallback_used"] is False
+        assert execution["attempts"][0][
+            "error_code"
+        ] == "provider_connection_error"
