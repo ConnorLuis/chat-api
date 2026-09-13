@@ -44,6 +44,23 @@ jobs:
         run: |
           python -W error -m compileall -q src scripts tests
 
+      - name: Run Contract Audit regressions
+        env:
+          EMBEDDING_PROVIDER: mock
+          API_AUTH_ENABLED: "false"
+          REQUEST_RATE_LIMIT_ENABLED: "false"
+          TOKEN_QUOTA_ENABLED: "false"
+        run: |
+          pytest -q \
+            tests/core/test_settings.py \
+            tests/providers/test_provider_resilience.py \
+            tests/kb/test_embeddings.py \
+            tests/kb/test_embedding_registry.py \
+            tests/kb/test_index_contract.py \
+            tests/kb/test_kb_index_contract_http.py \
+            tests/scripts/test_seed_kb.py \
+            tests/scripts/test_run_rag_eval_workflow.py
+
       - name: Run tests
         env:
           EMBEDDING_PROVIDER: mock

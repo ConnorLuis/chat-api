@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import random
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, replace
@@ -27,6 +28,7 @@ class ProviderRetryPolicy:
     max_attempts: int = 2
     base_delay_ms: int = 100
     max_delay_ms: int = 1_000
+    jitter_ratio: float = 0.2
 
     def __post_init__(self) -> None:
         if self.max_attempts < 1:
@@ -38,13 +40,34 @@ class ProviderRetryPolicy:
                 "max_delay_ms must be greater than or equal to "
                 "base_delay_ms"
             )
+        if not 0.0 <= self.jitter_ratio <= 1.0:
+            raise ValueError("jitter_ratio must be between 0 and 1")
 
-    def delay_seconds(self, failed_attempt: int) -> float:
-        delay_ms = min(
+    def delay_seconds(
+        self,
+        failed_attempt: int,
+        *,
+        random_sample: float | None = None,
+    ) -> float:
+        if failed_attempt < 1:
+            raise ValueError("failed_attempt must be at least 1")
+
+        base_delay_ms = min(
             self.base_delay_ms * (2 ** (failed_attempt - 1)),
             self.max_delay_ms,
         )
-        return delay_ms / 1_000
+        if base_delay_ms == 0 or self.jitter_ratio == 0:
+            return base_delay_ms / 1_000
+
+        sample = random.random() if random_sample is None else float(random_sample)
+        if not 0.0 <= sample <= 1.0:
+            raise ValueError("random_sample must be between 0 and 1")
+
+        lower = 1.0 - self.jitter_ratio
+        upper = 1.0 + self.jitter_ratio
+        factor = lower + (upper - lower) * sample
+        jittered_ms = min(self.max_delay_ms, base_delay_ms * factor)
+        return jittered_ms / 1_000
 
 
 class ResilientChatProvider:

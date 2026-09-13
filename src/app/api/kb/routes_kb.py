@@ -7,6 +7,10 @@ from fastapi import APIRouter, Query, HTTPException, Request
 from src.app.kb import store, chunking
 from src.app.kb.chroma_store import get_collection, delete_doc, query, upsert_chunks
 from src.app.kb.embeddings import get_embedding_engine
+from src.app.kb.index_contract import (
+    IndexContractError,
+    ensure_collection_index_contract,
+)
 from src.app.core.settings import settings
 from src.app.kb.index_text import extract_index_text
 from src.app.kb.schemas import DocumentResponse, DocumentRequest, SearchResponse, Hit, DocumentsListResponse, \
@@ -15,16 +19,35 @@ from src.app.kb.store import delete_doc_file, mark_deleted
 
 router = APIRouter(prefix="/kb")
 
-_engine = None
-
-def get_engine():
-    global _engine
-    if _engine is None:
-        _engine = get_embedding_engine(settings)
-    return _engine
 
 def uuid_like_string():
     return str(uuid.uuid4())[:8]
+
+
+
+def _collection_and_engine():
+    engine = get_embedding_engine(settings)
+    collection = get_collection(
+        settings.KB_CHROMA_DIR,
+        settings.KB_COLLECTION,
+        space="cosine",
+    )
+    try:
+        ensure_collection_index_contract(
+            collection,
+            settings_obj=settings,
+            embedding_engine=engine,
+            space="cosine",
+        )
+    except IndexContractError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "kb_index_contract_mismatch",
+                "message": str(exc),
+            },
+        ) from exc
+    return collection, engine
 
 """
 POST /kb/documents
@@ -40,6 +63,7 @@ POST /kb/documents
 async def create_document(request: DocumentRequest, http_request: Request):
     start_time = time.perf_counter()
     trace_id = getattr(http_request.state, "trace_id", None) or http_request.headers.get("x-trace-id") or f"tr-{uuid_like_string()}"
+    collection, engine = _collection_and_engine()
     # 保存原文
     # 内部会自动创建本地目录，并向docs.jsonl追加元数据
     doc_id = store.save_document(
@@ -55,12 +79,7 @@ async def create_document(request: DocumentRequest, http_request: Request):
         latency_ms = int((time.perf_counter() - start_time) * 1000)
         return DocumentResponse(doc_id=doc_id,chunks = 0, metadata = {"trace_id": trace_id, "latency_ms": latency_ms})
     chunks_texts = [c.text for c in chunks_data]
-    # 获取向量数据库的collection
-    collection = get_collection(settings.KB_CHROMA_DIR, settings.KB_COLLECTION, space="cosine")
-
-
     # 向量化chunk，批量计算所有chunk的向量
-    engine = get_engine()
     embeddings = engine.embed_documents(chunks_texts)
 
     # chroma upsert（结构化构造）
@@ -119,8 +138,7 @@ async def search_knowledge_base(
     trace_id = getattr(http_request.state, "trace_id", None) or http_request.headers.get(
         "x-trace-id") or f"tr-{uuid_like_string()}"
 
-    collection = get_collection(settings.KB_CHROMA_DIR, settings.KB_COLLECTION, space="cosine")
-    engine = get_engine()
+    collection, engine = _collection_and_engine()
     query_vector = engine.embed_query(q)
     hits_raw = query(collection, query_vector, top_k=top_k)
     hits = []

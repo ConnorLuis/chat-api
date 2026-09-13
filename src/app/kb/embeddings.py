@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 import hashlib
 import math
+import threading
 
 from src.app.core.settings import Settings
 
@@ -120,14 +121,54 @@ class HFEmbeddingEngine(EmbeddingEngine):
         return embedding.tolist()
 
 
-def get_embedding_engine(settings: Settings) -> EmbeddingEngine:
-    provider = settings.EMBEDDING_PROVIDER
+_engine_cache: dict[tuple[str, str], EmbeddingEngine] = {}
+_engine_cache_lock = threading.Lock()
+
+
+def _embedding_engine_key(settings: Settings) -> tuple[str, str]:
+    provider = settings.EMBEDDING_PROVIDER.strip().lower()
 
     if provider == "mock":
-        return MockEmbeddingEngine(dim=int(settings.EMBEDDING_DIM))
-    elif provider == "hf":
-        return HFEmbeddingEngine(
-            model_name_or_path=settings.EMBEDDING_MODEL
-        )
-    else:
-        raise ValueError("只支持 mock / hf 两种嵌入引擎")
+        return (provider, str(int(settings.EMBEDDING_DIM)))
+
+    if provider == "hf":
+        model = settings.EMBEDDING_MODEL.strip()
+        if not model:
+            raise ValueError(
+                "EMBEDDING_MODEL is required when EMBEDDING_PROVIDER=hf"
+            )
+        return (provider, model)
+
+    raise ValueError("只支持 mock / hf 两种嵌入引擎")
+
+
+def _build_embedding_engine(settings: Settings) -> EmbeddingEngine:
+    provider, identity = _embedding_engine_key(settings)
+
+    if provider == "mock":
+        return MockEmbeddingEngine(dim=int(identity))
+
+    return HFEmbeddingEngine(model_name_or_path=identity)
+
+
+def get_embedding_engine(settings: Settings) -> EmbeddingEngine:
+    """Return one engine per vector-space configuration."""
+
+    key = _embedding_engine_key(settings)
+    cached = _engine_cache.get(key)
+    if cached is not None:
+        return cached
+
+    with _engine_cache_lock:
+        cached = _engine_cache.get(key)
+        if cached is None:
+            cached = _build_embedding_engine(settings)
+            _engine_cache[key] = cached
+        return cached
+
+
+def reset_embedding_engine_cache() -> None:
+    """Clear the registry for tests/support tooling."""
+
+    with _engine_cache_lock:
+        _engine_cache.clear()

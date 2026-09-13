@@ -1,7 +1,9 @@
 import time
 
 from src.app.core.settings import settings
+from src.app.kb import chroma_store
 from src.app.kb.embeddings import get_embedding_engine
+from src.app.kb.index_contract import ensure_collection_index_contract
 from src.app.kb.schemas import Hit
 from src.app.rag.base import RAGBackend
 from src.app.rag.schemas import RAGCitation, RAGContextResult
@@ -31,6 +33,17 @@ class LangChainRAGBackend(RAGBackend):
             ) from e
 
         embedding_engine = get_embedding_engine(settings)
+        raw_collection = chroma_store.get_collection(
+            settings.KB_CHROMA_DIR,
+            settings.KB_COLLECTION,
+            space="cosine",
+        )
+        ensure_collection_index_contract(
+            raw_collection,
+            settings_obj=settings,
+            embedding_engine=embedding_engine,
+            space="cosine",
+        )
 
         class ProjectEmbeddings(Embeddings):
             def embed_documents(self, texts: list[str]) -> list[list[float]]:
@@ -43,7 +56,7 @@ class LangChainRAGBackend(RAGBackend):
             collection_name=settings.KB_COLLECTION,
             persist_directory=settings.KB_CHROMA_DIR,
             embedding_function=ProjectEmbeddings(),
-            collection_metadata={"hnsw:space": "cosine"},
+            collection_metadata=dict(raw_collection.metadata or {}),
         )
 
     def build_context(self, query: str, top_k: int) -> RAGContextResult:
@@ -96,8 +109,6 @@ class LangChainRAGBackend(RAGBackend):
             source = metadata.get("source") or "unknown"
             title = metadata.get("title")
 
-            # Chroma 的 similarity_search_with_score 返回的是距离；距离越小越相似。
-            # 项目内部 Hit.score 习惯使用“越大越好”，所以这里转成近似相似度。
             try:
                 score = 1.0 - float(distance)
             except Exception:
@@ -115,8 +126,7 @@ class LangChainRAGBackend(RAGBackend):
             )
 
         t0 = time.perf_counter()
-        hits = rerank_hits(query=query, hits=hits)
-        hits = hits[:top_k]
+        hits = rerank_hits(query=query, hits=hits)[:top_k]
         timing["rerank_ms"] = _ms(t0)
 
         t0 = time.perf_counter()
@@ -137,7 +147,6 @@ class LangChainRAGBackend(RAGBackend):
         ]
 
         timing["total_ms"] = _ms(total_start)
-
         return RAGContextResult(
             enabled=True,
             top_k=top_k,

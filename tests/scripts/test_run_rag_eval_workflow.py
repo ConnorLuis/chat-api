@@ -1,6 +1,9 @@
 import json
 from pathlib import Path
 
+import pytest
+import scripts.run_rag_eval_workflow as workflow
+
 from scripts.run_rag_eval_workflow import print_summary
 
 
@@ -40,3 +43,48 @@ def test_print_summary_handles_missing_file(tmp_path, capsys):
 
     err = capsys.readouterr().err
     assert "summary not found" in err
+
+def test_require_clean_kb_accepts_empty_state(monkeypatch):
+    monkeypatch.setattr(
+        workflow,
+        "get_kb_document_total",
+        lambda base_url, timeout: 0,
+    )
+
+    workflow.require_clean_kb("http://test", timeout=1)
+
+
+def test_require_clean_kb_rejects_dirty_state(monkeypatch):
+    monkeypatch.setattr(
+        workflow,
+        "get_kb_document_total",
+        lambda base_url, timeout: 2,
+    )
+
+    with pytest.raises(SystemExit, match="requires an empty active KB"):
+        workflow.require_clean_kb("http://test", timeout=1)
+
+
+def test_verify_seeded_kb_state_binds_manifest_hash_and_count(
+    tmp_path,
+    monkeypatch,
+):
+    manifest = tmp_path / "manifest.jsonl"
+    manifest.write_text(
+        json.dumps({
+            "path": "a.md",
+            "content_sha256": "a" * 64,
+        }) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        workflow,
+        "get_kb_document_total",
+        lambda base_url, timeout: 1,
+    )
+
+    workflow.verify_seeded_kb_state(
+        "http://test",
+        manifest,
+        timeout=1,
+    )

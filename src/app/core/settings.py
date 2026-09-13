@@ -189,6 +189,19 @@ class Settings:
         )
 
     @property
+    def PROVIDER_RETRY_JITTER_RATIO(self) -> float:
+        value = getenv_float(
+            "PROVIDER_RETRY_JITTER_RATIO",
+            0.2,
+            minimum=0.0,
+        )
+        if value > 1.0:
+            raise ValueError(
+                "PROVIDER_RETRY_JITTER_RATIO must be between 0 and 1"
+            )
+        return value
+
+    @property
     def PROVIDER_FALLBACK_ENABLED(self) -> bool:
         return getenv_bool(
             "PROVIDER_FALLBACK_ENABLED",

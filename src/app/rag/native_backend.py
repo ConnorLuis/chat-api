@@ -3,6 +3,7 @@ import time
 from src.app.core.settings import settings
 from src.app.kb import chroma_store
 from src.app.kb.embeddings import get_embedding_engine
+from src.app.kb.index_contract import ensure_collection_index_contract
 from src.app.kb.schemas import Hit
 from src.app.rag.base import RAGBackend
 from src.app.rag.schemas import RAGCitation, RAGContextResult
@@ -55,6 +56,12 @@ class NativeRAGBackend(RAGBackend):
 
         collection = chroma_store.get_collection(settings.KB_CHROMA_DIR, settings.KB_COLLECTION)
         embed_engine = get_embedding_engine(settings)
+        ensure_collection_index_contract(
+            collection,
+            settings_obj=settings,
+            embedding_engine=embed_engine,
+            space="cosine",
+        )
 
         t0 = time.perf_counter()
         query_vector = embed_engine.embed_query(query)

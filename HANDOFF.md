@@ -100,7 +100,7 @@ Day9B、Day11、Day12 与 Day13 均已通过各自本地严格验收和目标分
 
 - 统一错误分类：timeout、connection、rate limit、unavailable、request、dependency、configuration、stream interrupted；
 - timeout/connection/HTTP 408/429/5xx 可重试，其余配置、依赖、其他 4xx 和未知错误默认不重试；
-- `max_attempts` 包含首次调用，默认 2 次，指数退避默认从 100ms 开始并限制在 1000ms；
+- `max_attempts` 包含首次调用，默认 2 次；指数退避从 100ms 开始、1000ms 封顶，并使用默认 ratio=0.2 的 bounded jitter；
 - OpenAI SDK 内置 retry 固定为 0，由网关提供唯一重试语义；
 - fallback 默认关闭，只在 primary 可重试错误耗尽后触发；
 - fallback 使用显式 fallback model 或自身默认模型，不继承 primary request model；

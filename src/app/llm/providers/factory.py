@@ -69,6 +69,10 @@ def _retry_policy(
                 settings_obj
                 .PROVIDER_RETRY_MAX_DELAY_MS
             ),
+            jitter_ratio=(
+                settings_obj
+                .PROVIDER_RETRY_JITTER_RATIO
+            ),
         )
     except ValueError as exc:
         raise ProviderConfigurationError(

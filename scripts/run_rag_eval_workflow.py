@@ -36,6 +36,74 @@ def check_server(base_url: str, timeout: int) -> None:
             f"Start uvicorn first, then rerun this workflow. Detail: {e}"
         ) from e
 
+def get_kb_document_total(base_url: str, timeout: int) -> int:
+    url = (
+        base_url.rstrip("/")
+        + "/kb/documents?limit=1&offset=0&include_deleted=false"
+    )
+    try:
+        with urlopen(url, timeout=timeout) as resp:
+            body = resp.read().decode("utf-8")
+            if resp.status != 200:
+                raise RuntimeError(
+                    f"GET {url} returned HTTP {resp.status}: {body[:300]}"
+                )
+            payload = json.loads(body)
+    except URLError as e:
+        raise SystemExit(f"failed to inspect KB state at {url}: {e}") from e
+
+    return int(payload.get("total", 0))
+
+
+def require_clean_kb(base_url: str, timeout: int) -> None:
+    total = get_kb_document_total(base_url, timeout)
+    if total != 0:
+        raise SystemExit(
+            "reproducible RAG eval requires an empty active KB before seeding; "
+            f"found {total} active documents. Run --reset-runtime, restart "
+            "uvicorn, then rerun; or use --skip-seed to evaluate the current "
+            "live KB intentionally."
+        )
+
+
+def read_manifest_records(path: Path) -> list[dict]:
+    if not path.exists():
+        raise SystemExit(f"seed manifest not found after ingest: {path}")
+    records = []
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        if raw.strip():
+            records.append(json.loads(raw))
+    return records
+
+
+def verify_seeded_kb_state(
+    base_url: str,
+    manifest_path: Path,
+    timeout: int,
+) -> None:
+    records = read_manifest_records(manifest_path)
+    if not records:
+        raise SystemExit("seed manifest is empty after ingest")
+
+    missing_hash = [
+        item.get("path", "<unknown>")
+        for item in records
+        if not item.get("content_sha256")
+    ]
+    if missing_hash:
+        raise SystemExit(
+            "seed manifest is missing content_sha256 for: "
+            + ", ".join(missing_hash)
+        )
+
+    total = get_kb_document_total(base_url, timeout)
+    if total != len(records):
+        raise SystemExit(
+            "seeded KB state does not match manifest: "
+            f"active_documents={total}, manifest_records={len(records)}"
+        )
+
+
 def warmup_provider(base_url: str, provider: str, timeout: int) -> None:
     url = base_url.rstrip("/") + "/chat"
     payload = {
@@ -176,6 +244,7 @@ def main() -> int:
     check_server(args.base_url, timeout=10)
 
     if not args.skip_seed:
+        require_clean_kb(args.base_url, timeout=args.timeout)
         run_cmd([
             sys.executable,
             "scripts/seed_kb.py",
@@ -187,6 +256,11 @@ def main() -> int:
             "--timeout",
             str(args.timeout),
         ])
+        verify_seeded_kb_state(
+            args.base_url,
+            Path(args.manifest),
+            timeout=args.timeout,
+        )
 
     if not args.skip_warmup:
         warmup_provider(args.base_url, args.provider, timeout=args.timeout)

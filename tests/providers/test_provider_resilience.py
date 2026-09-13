@@ -97,6 +97,7 @@ def test_sync_retries_retryable_failure():
             max_attempts=2,
             base_delay_ms=100,
             max_delay_ms=100,
+            jitter_ratio=0.0,
         ),
         sync_sleep=delays.append,
     )
@@ -244,3 +245,28 @@ def test_stream_never_retries_after_output_started():
         captured.value.execution.attempts[-1].outcome
         == "stream_interrupted"
     )
+
+def test_retry_policy_jitter_is_bounded_and_cap_is_hard():
+    policy = ProviderRetryPolicy(
+        max_attempts=4,
+        base_delay_ms=100,
+        max_delay_ms=1000,
+        jitter_ratio=0.2,
+    )
+
+    assert policy.delay_seconds(1, random_sample=0.0) == pytest.approx(0.08)
+    assert policy.delay_seconds(1, random_sample=1.0) == pytest.approx(0.12)
+    assert policy.delay_seconds(4, random_sample=1.0) <= 1.0
+
+
+def test_retry_policy_zero_jitter_preserves_exact_exponential_backoff():
+    policy = ProviderRetryPolicy(
+        max_attempts=4,
+        base_delay_ms=100,
+        max_delay_ms=1000,
+        jitter_ratio=0.0,
+    )
+
+    assert policy.delay_seconds(1) == pytest.approx(0.1)
+    assert policy.delay_seconds(2) == pytest.approx(0.2)
+    assert policy.delay_seconds(4) == pytest.approx(0.8)

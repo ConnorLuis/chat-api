@@ -1,4 +1,5 @@
 import argparse
+import hashlib
 import json
 import re
 import shutil
@@ -11,6 +12,10 @@ from urllib.request import Request, urlopen
 DEFAULT_SEED_DIR = "docs/kb_seed"
 DEFAULT_BASE_URL = "http://localhost:8000"
 DEFAULT_MANIFEST = "eval/kb_seed_manifest.jsonl"
+
+
+def content_sha256(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def title_from_filename(path: Path) -> str:
@@ -200,6 +205,7 @@ def main() -> int:
             "source": payload["source"],
             "title": payload["title"],
             "text_chars": len(payload["text"]),
+            "content_sha256": content_sha256(payload["text"]),
         }
 
         if args.dry_run:

@@ -2,6 +2,7 @@ from pathlib import Path
 
 from scripts.seed_kb import (
     build_payload,
+    content_sha256,
     iter_seed_paths,
     seed_index,
     title_from_filename,
@@ -55,3 +56,12 @@ def test_build_payload_uses_file_text_source_and_title(tmp_path):
     assert payload["text"] == "# Header\n\nbody text"
     assert payload["source"].endswith("07_KB Ingest & Search.md")
     assert payload["title"] == "KB Ingest & Search"
+
+def test_content_sha256_is_deterministic():
+    first = content_sha256("same content")
+    second = content_sha256("same content")
+    changed = content_sha256("changed content")
+
+    assert len(first) == 64
+    assert first == second
+    assert first != changed
